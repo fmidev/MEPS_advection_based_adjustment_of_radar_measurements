@@ -1,0 +1,16 @@
+name: advec
+channels:
+  - conda-forge
+dependencies:
+  - python
+  - numpy
+  - gdal
+  - rasterio
+  - matplotlib
+  - xarray
+  - dask
+  - netCDF
+  - bottleneck
+  - rioxarray
+  - cfgrib
+  - wradlib
