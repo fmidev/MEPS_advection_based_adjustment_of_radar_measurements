@@ -13,7 +13,7 @@ import geopy.distance
 
 
 class advection_adjustment():
-    def __init__(self):
+    def __init__(self,antenna_lat,antenna_lon,antenna_height):
         self.ground_level_dataset = xr.open_dataset("suomi_korkeusalueet_luvuilla.tif", decode_coords="all").to_dataarray()
         self.weather = xr.open_dataset("latest_smartmet.grib", engine="cfgrib", decode_coords="all").to_dataarray()
         self.height_to_level = {5320.3: 24, 4997.4: 25, 4688.0: 26, 4391.7: 27, 4108.1: 28, 3836.9: 29, 3577.8: 30, 3330.4: 31, 3094.5: 32, 2870.0: 33, 2656.5: 34, 2454.1: 35, 2262.5: 36, 2081.5: 37, 1911.2: 38, 1751.4: 39, 1602.1: 40, 1463.1: 41, 1334.4: 42, 1215.0: 43, 1104.4: 44, 1001.8: 45, 906.8: 46, 819.0: 47, 737.8: 48, 662.9: 49, 593.8: 50, 530.1: 51, 471.5: 52, 417.6: 53, 368.1: 54, 322.6: 55, 280.7: 56, 242.2: 57, 206.6: 58, 173.7: 59, 143.1: 60, 114.5: 61, 87.5: 62, 61.7: 63, 36.8: 64, 12.2: 65}
@@ -25,6 +25,9 @@ class advection_adjustment():
         self.heights  = np.array(list(self.height_to_level.keys()))
         self.flat_lons = self.weather['longitude'].values.flatten()
         self.flat_lats = self.weather['latitude'].values.flatten()
+        self.antenna_lat = antenna_lat
+        self.antenna_lon = antenna_lon
+        self.antenna_height = antenna_height
     
     def get_closest_xy_coordinate_in_model(self,x,y):
         closest = np.sqrt((self.flat_lats - y)**2 + (self.flat_lons - x)**2).argmin()
@@ -40,10 +43,13 @@ class advection_adjustment():
         smallest_value = self.heights[np.argmin(index)]
         return self.height_to_level[smallest_value]
 
-    def get_radar_bin_height(self, x,y, radar_antenna):
-        #Alkuun tutkan sijainti, sitten x,y kilometreissä sijaintiin
-        #Siinä on etäisyys ja saadaan height
-        return 5000
+    def get_radar_bin_height(self, x, y):
+        el = np.deg2rad(0.3)
+        distance_meters=geopy.distance.geodesic((y, x), (self.antenna_lat, self.antenna_lon)).meters
+        k_e=4.0/3.0
+        a=6371000
+        # doviak 2.28c, johon lisätty antennin korkeus
+        return k_e*a*(np.cos(el)/(np.cos(el+distance_meters/(k_e*a)))-1)+ self.antenna_height
 
     def get_fall_speed(self,z,melting_layer):
         return 1 + min(4, (4/700)*max(z-(melting_layer-700),0)) #m/s
@@ -64,8 +70,7 @@ class advection_adjustment():
         z = self.ground_level_dataset.sel(y=y,x=x,method="nearest").data[0,0]
         if np.isnan(z):
             return None
-        radar_antenna = (0,0,0)
-        el_h = self.get_radar_bin_height(x,y,radar_antenna)
+        el_h = self.get_radar_bin_height(x,y)
         #Yksi iteraation on sekunti
         t = 0
         while el_h > z:
@@ -75,7 +80,7 @@ class advection_adjustment():
             x,y = self.compute_new_lat_lon_to_past(x,wind_from_west_to_east_in_m_per_s,y,wind_from_south_to_north_in_m_per_s)
             ml_height = self.get_melting_layer_height(x,y,step=0)
             z += self.get_fall_speed(z,ml_height)
-            el_h = self.get_radar_bin_height(x,y,radar_antenna)
+            el_h = self.get_radar_bin_height(x,y)
             t -= 1
         return (x,y,el_h,t)
 
@@ -91,9 +96,8 @@ filename = "202208281555_fianj_PVOL.h5"
 
 pvol = xd.io.open_odim_datatree(filename)
 pvol['sweep_0']
-
-advec = advection_adjustment()
-print(advec.advection_from_a_grid_cell(60,30))
+advec = advection_adjustment(27.1080600656569,60.9038700163364,139)
+print(advec.advection_from_a_grid_cell(60.869673308673676, 26.62972752573382))
 
 # nykyhetkestä ja mennä menneeseen koska menneisyydestä tulevaisuuteen voidaan joutua mappaamaan samalle arvolle, 
 # kun taas toisin päin ei tule ongelmaa sillä aina on menneisyydessä arvo...
