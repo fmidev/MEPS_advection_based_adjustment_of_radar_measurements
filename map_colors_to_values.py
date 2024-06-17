@@ -1,6 +1,7 @@
 import rasterio as rio
 import numpy as np
 import matplotlib.pyplot as plt
+from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 
 src = rio.open("suomi.tif")
@@ -44,7 +45,10 @@ map_colors_to_index = {(117, 173, 87): 0,#0.5-25
  (232, 168, 65):15,# 300-350
  (250, 189, 75):16}# 250-300
 
+dst_crs = 'EPSG:4326'
 
+transform, width, height = calculate_default_transform(
+    src.crs, dst_crs, src.width, src.height, *src.bounds)
 #py, px = dataset.index(lon, lat)
 
 new_array = -np.ones((array.shape[1],array.shape[2]))
@@ -55,10 +59,22 @@ for i in range(array.shape[1]):
         osanen = array[:,i,j]
 
         new_array[i,j] = map_colors_to_values_vrt_sea[(osanen[0],osanen[1],osanen[2])]
-
+metadata.update({
+        'crs': dst_crs,
+        'transform': transform,
+        'width': width,
+        'height': height
+    })
 print(metadata)
 
 with rio.open("suomi_korkeusalueet_luvuilla.tif", 'w', **metadata) as dst:
-    dst.write(new_array, 1)
+    reproject(
+        source=new_array,
+        destination=rio.band(dst, 1),
+        src_transform=src.transform,
+        src_crs=src.crs,
+        dst_transform=transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.nearest)
 
 src.close()

@@ -1,5 +1,5 @@
 # alimmat kulmat PPI1_A, PPI2_A ja PPI3_A:n  matala kulma (0.3) näkee kauas (Luostolla 0.1).
-# 250 km maanpinnalla ollaan korkeudessa noin 5 km
+# 250 km etäisyydellä maanpinnalla ollaan korkeudessa noin 5 km
 
 # alin smartmet on 12 m
 # korkeus_malli_mappi
@@ -9,6 +9,7 @@ import xarray as xr
 import rioxarray
 import numpy as np
 import wradlib as wrl
+import geopy.distance
 
 
 class advection_adjustment():
@@ -39,8 +40,10 @@ class advection_adjustment():
         smallest_value = self.heights[np.argmin(index)]
         return self.height_to_level[smallest_value]
 
-    def get_radar_bin_heigth(x,y, radar_antenna):
-        return
+    def get_radar_bin_height(self, x,y, radar_antenna):
+        #Alkuun tutkan sijainti, sitten x,y kilometreissä sijaintiin
+        #Siinä on etäisyys ja saadaan height
+        return 5000
 
     def get_fall_speed(self,z,melting_layer):
         return 1 + min(4, (4/700)*max(z-(melting_layer-700),0)) #m/s
@@ -49,23 +52,37 @@ class advection_adjustment():
         closest_y, closest_x = self.get_closest_xy_coordinate_in_model(x,y)
         return self.weather.isel(y=closest_y,x=closest_x, step=step).sel(hybrid=self.get_model_level(z))
 
-    def advection_from_a_grid_cell(self,x,y):
+    def compute_new_lat_lon_to_past(self,x,delta_x,y,delta_y):
+        #Bearing in degrees: 0 – North, 90 – East, 180 – South, 270 or -90 – West.
+        bearing_y = 180 if delta_y > 0 else 0
+        bearing_x = -90 if delta_x > 0 else 90
+        x = geopy.distance.distance(meters=delta_x).destination((y, x), bearing=bearing_x).longitude
+        y = geopy.distance.distance(meters=delta_y).destination((y, x), bearing=bearing_y).latitude
+        return (x,y)
+
+    def advection_from_a_grid_cell(self,x,y):             
         z = self.ground_level_dataset.sel(y=y,x=x,method="nearest").data[0,0]
-        el_h = self.get_radar_bin_height(x,y)
+        if np.isnan(z):
+            return None
+        radar_antenna = (0,0,0)
+        el_h = self.get_radar_bin_height(x,y,radar_antenna)
         #Yksi iteraation on sekunti
+        t = 0
         while el_h > z:
             temp_and_wind = self.get_weather_data(x,y,z,step=0)
-            x -= temp_and_wind.sel(variable='u').data
-            y -= temp_and_wind.sel(variable='v').data
+            wind_from_west_to_east_in_m_per_s = temp_and_wind.sel(variable='u').data
+            wind_from_south_to_north_in_m_per_s = temp_and_wind.sel(variable='v').data
+            x,y = self.compute_new_lat_lon_to_past(x,wind_from_west_to_east_in_m_per_s,y,wind_from_south_to_north_in_m_per_s)
             ml_height = self.get_melting_layer_height(x,y,step=0)
             z += self.get_fall_speed(z,ml_height)
-            el_h = self.get_radar_bin_height(x,y)
-        return (x,y,z)
+            el_h = self.get_radar_bin_height(x,y,radar_antenna)
+            t -= 1
+        return (x,y,el_h,t)
 
-    def get_adjusted_dbz(self):
-        # avataan alkuun geneerinen radar compo ja siitä lasketaan binien sijainnit maan pinnalla.
-        # Sitten valitaan jokainen x ja y sijainti tästä listasta ja ruvetaan laskemaan...
-        # arvioidaa
+    #def get_adjusted_dbz(self):
+    #    # avataan alkuun geneerinen radar compo ja siitä lasketaan binien sijainnit maan pinnalla.
+    #    # Sitten valitaan jokainen x ja y sijainti tästä listasta ja ruvetaan laskemaan...
+    #    # arvioidaa
 
 
 import xradar as xd
@@ -74,6 +91,9 @@ filename = "202208281555_fianj_PVOL.h5"
 
 pvol = xd.io.open_odim_datatree(filename)
 pvol['sweep_0']
+
+advec = advection_adjustment()
+print(advec.advection_from_a_grid_cell(60,30))
 
 # nykyhetkestä ja mennä menneeseen koska menneisyydestä tulevaisuuteen voidaan joutua mappaamaan samalle arvolle, 
 # kun taas toisin päin ei tule ongelmaa sillä aina on menneisyydessä arvo...
