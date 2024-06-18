@@ -215,8 +215,6 @@ class advection_adjustment():
                 location_values = ds1.sel(azimuth=az,range=ra)
                 lat = location_values.y.data
                 lon = location_values.x.data
-                #if j == 481:
-                #print(i,j,self.advection_from_a_grid_cell(lat,lon))
                 self.advection_from_a_grid_cell(lat,lon)  
              
             print(j,time.time()-start_time)
