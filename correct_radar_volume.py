@@ -53,6 +53,7 @@ class advection_adjustment():
         #approximate_distance
         distance_meters = np.sqrt(lat_diff_m**2+lon_diff_m**2)*111412
         # doviak 2.28c, johon lisätty antennin korkeus
+        #print(distance_meters)
         if distance_meters > 250000:
             return np.nan
         return 6371000*4.0/3.0*(np.cos(np.deg2rad(0.3))/(np.cos(np.deg2rad(0.3)+distance_meters/(6371000*4.0/3.0)))-1)+ self.antenna_height
@@ -179,6 +180,7 @@ class advection_adjustment():
 
     def advection_from_a_grid_cell(self,lat,lon):             
         z = self.ground_level_dataset.sel(y=lat,x=lon,method="nearest").data[0,0]
+        alku = z
         if np.isnan(z):
             return None
         el_h = self.get_radar_bin_height(lon,lat)
@@ -216,7 +218,7 @@ class advection_adjustment():
             t -= timestep
             el_h = self.get_radar_bin_height(lon,lat)
         
-        return (lat,lon,el_h,t,z)
+        return (lat,lon,el_h,t)
 
     def get_adjusted_dbz(self):
         filename = "202208281555_fianj_PVOL.h5"
@@ -229,8 +231,8 @@ class advection_adjustment():
         def process(lat,lon):
             return self.advection_from_a_grid_cell(lat,lon)  
         
-        radar_lats = ds1.to_dataarray().x.values
-        radar_lons = ds1.to_dataarray().y.values
+        radar_lats = ds1.to_dataarray().y.values
+        radar_lons = ds1.to_dataarray().x.values
 
         print((radar_lats))
         start_time = time.time()
@@ -241,8 +243,11 @@ class advection_adjustment():
         return interp
 
 advec = advection_adjustment(60.9038700163364,27.1080600656569,139)
-print(advec.get_adjusted_dbz())
-      #.advection_from_a_grid_cell(26.62972752573382,60.869673308673676))
+
+import pickle
+interp = advec.get_adjusted_dbz()
+with open('last_output.pickle', 'wb') as f:
+    pickle.dump(interp, f)
 
 # nykyhetkestä ja mennä menneeseen koska menneisyydestä tulevaisuuteen voidaan joutua mappaamaan samalle arvolle, 
 # kun taas toisin päin ei tule ongelmaa sillä aina on menneisyydessä arvo...
