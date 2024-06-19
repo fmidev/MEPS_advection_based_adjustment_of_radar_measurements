@@ -120,16 +120,8 @@ class advection_adjustment():
             return timestep
     
     def compute_next_timestep(self, y, x, z, lvl, u_tuuli, v_tuuli, el_h, ml_height, t, step,closest_x,closest_y):
-        #1. Mikä on etäisyys ajassa saman lvl:n ruudukkoon vallitsevan tuulen suunnan mukaisesti?
-        # tuulen suunta, closest_y ja closest_x viereinen lokero, siitä arvo ja menoksi tai reunoilla 1250
-        
         timestep = 100000 # Sekunti
-        """
-        lat_diff_m = (y-lat)
-        lon_diff_m = (x-lon)*np.cos((np.deg2rad(y+lat)/2))
-        #approximate_distance
-        distance_meters = np.sqrt(lat_diff_m**2+lon_diff_m**2)*111412
-        """
+        
         if u_tuuli > 0 and closest_x < self.shape[1]:
             lat = self.lats[closest_y,closest_x + 1]
             lon = self.lons[closest_y,closest_x + 1]
@@ -158,17 +150,7 @@ class advection_adjustment():
             lat_diff_m = (y-lat)
             lon_diff_m = (x-lon)*np.cos((np.deg2rad(y+lat)/2))
             dist = np.sqrt(lat_diff_m**2+lon_diff_m**2)*111412
-            timestep = min(dist/np.abs(v_tuuli), timestep)
-
-        #print("1",timestep)
-        
-        # tähän approksimaatio u_tuuli ja v_tuuli kestosta seuraavaan ruutuun
-        
-
-
-        #2. Mikä on etäisyys ajassa ylempään ruudukkoon
-        # Oleellisesti, puoliväli nykylvl:n ja seuraavan välissä. laske siis etäisyys z ja pyöristä ylös itse raja on aina ylempää palikkaa
-        
+            timestep = min(dist/np.abs(v_tuuli), timestep)        
         
         to_next_height = max(0,self.level_to_height[lvl+17]-self.level_to_height[lvl+18])
         timestep = min(self.compute_time_for_rise(to_next_height,z,ml_height),timestep)
@@ -207,13 +189,14 @@ class advection_adjustment():
         lon_alku = lon
         closest_y, closest_x = self.get_closest_xy_coordinate_in_model(lon,lat)
         while el_h > z:            
-            # tätä voi ruveta päivittämään approksimaatiolla!
+            # tässä approksimaatio 1 degree lat on 111.412 km
             if np.abs(lat-lat_alku) > 2.5/111.412:
                 if lat > lat_alku:
                     closest_y +=1
                 else:
                     closest_y -=1
                 lat_alku = lat
+            # tässä approksimaatio 1 degree lon on 111.412 km *np.cos(np.deg2rad(lat))
             if np.abs(lon-lon_alku) > 2.5/(111.412*np.cos(np.deg2rad(lat))):
                 if lon > lon_alku:
                     closest_x +=1
@@ -227,7 +210,6 @@ class advection_adjustment():
             
             timestep = self.compute_next_timestep(lat,lon,z,lvl,u_tuuli,v_tuuli,el_h,ml_height,t,step,closest_x,closest_y)
             
-            # tämä on hiukan hitaampi
             lon,lat = self.compute_new_lon_lat_to_past(lon,u_tuuli*timestep,lat,v_tuuli*timestep)
             
             z += self.compute_rise(timestep,z,ml_height)
@@ -243,22 +225,8 @@ class advection_adjustment():
         ds1 = pvol["sweep_0"].ds.wrl.georef.georeference(
             crs=wrl.georef.get_default_projection()
         )
-        #print(ds1)
-        min_lon = min(ds1.x.data.flatten())
-        min_lat = min(ds1.y.data.flatten())
-        max_lon = max(ds1.x.data.flatten())
-        max_lat = max(ds1.y.data.flatten())
-        print(min_lat,min_lon, max_lat,max_lon)
-        lons = np.arange(min_lon, max_lon,step=0.02)
-        lats = np.arange(min_lat, max_lat,step=0.01)
-        print("lats,lons",len(lats),len(lons))
         
         def process(lat,lon):
-            #az = ds1.azimuth.data[i]
-            #ra = ds1.range.data[j]
-            #location_values = ds1.sel(azimuth=az,range=ra)
-            #lat = location_values.y.data
-            #lon = location_values.x.data
             return self.advection_from_a_grid_cell(lat,lon)  
         
         radar_lats = ds1.to_dataarray().x.values
@@ -268,14 +236,9 @@ class advection_adjustment():
         start_time = time.time()
         with parallel_backend("loky", inner_max_num_threads=2):
             interp = Parallel(n_jobs=4,verbose=1)(delayed(process)(radar_lats[i,j],radar_lons[i,j])  for i in range(360) for j in range(500))
-        #print(process(max_lat-2,max_lon-4))
-        print(time.time()-start_time)    #1114.6268527507782 tulos 206989
-        # ds1 sisältää azimuth ja range pareina x,y coordsit.
-        # Loopataan siis azimuth, range pareina data 
-        # mapataan ne x ja y coordeille ja mennään näillä eteen päi
-        # ja saadaan siten oleellinen kama ulos
-        #print(ds1.coords)
-        return #results
+        
+        print(time.time()-start_time) 
+        return interp
 
 advec = advection_adjustment(60.9038700163364,27.1080600656569,139)
 print(advec.get_adjusted_dbz())
