@@ -6,10 +6,8 @@
 
 # Olisi varmaan hyvä olla height to level sittenkin.
 import xarray as xr
-import rioxarray
 import numpy as np
 import wradlib as wrl
-import geopy.distance
 import xradar as xd
 import time
 from joblib import Parallel, delayed, parallel_backend
@@ -30,14 +28,12 @@ class advection_adjustment():
         self.heights  = np.array(list(self.height_to_level.keys()))
         self.lats = self.weather['latitude'].values
         self.lons = self.weather['longitude'].values
-        self.flat_lons = self.weather['longitude'].values.flatten()
-        self.flat_lats = self.weather['latitude'].values.flatten()
         self.antenna_lat = antenna_lat
         self.antenna_lon = antenna_lon
         self.antenna_height = antenna_height
     
     def get_closest_xy_coordinate_in_model(self,x,y):
-        closest = np.sqrt((self.flat_lats - y)**2 + (self.flat_lons - x)**2).argmin()
+        closest = np.sqrt((self.weather['latitude'].values.flatten() - y)**2 + (self.weather['longitude'].values.flatten() - x)**2).argmin()
         return np.unravel_index(closest, self.shape)
 
     # nearest value selection
@@ -58,28 +54,6 @@ class advection_adjustment():
             return np.nan
         return 6371000*4.0/3.0*(np.cos(np.deg2rad(0.3))/(np.cos(np.deg2rad(0.3)+distance_meters/(6371000*4.0/3.0)))-1)+ self.antenna_height
 
-    def get_fall_speed(self,z,melting_layer):
-        return 5 - min(4, (4/700)*max(z-(melting_layer-700),0)) #m/s
-
-    def compute_new_lon_lat_to_past(self,x,delta_x,y,delta_y):
-        #Bearing in degrees: 0 – North, 90 – East, 180 – South, 270 or -90 – West.
-        #bearing_y = 180 if delta_y > 0 else 0
-        #bearing_x = -90 if delta_x > 0 else 90
-        #x = geopy.distance.distance(meters=delta_x).destination((y, x), bearing=bearing_x).longitude
-        #y = geopy.distance.distance(meters=delta_y).destination((y, x), bearing=bearing_y).latitude
-        #np.abs(lat-lat_alku) < 1/111412 or np.abs(lon-lon_alku) < )
-        if delta_x > 0:
-            x += delta_x/(111412*np.cos(np.deg2rad(y)))
-        else:
-            x += delta_x/(111412*np.cos(np.deg2rad(y)))
-        
-        if delta_y > 0:
-            y += delta_y/111412
-        else:
-            y -= delta_y/111412
-        
-        return (x,y)
-
     def rise_from_ml_given_time_from_x_0(self,time,x_0):
         # t = int_{x(0)}^{x(time)}1/(5-4x/700)dx, x(0)=0
         # from here https://www.wolframalpha.com/input?i=integral+of+1%2F%285-4x%2F700%29
@@ -98,29 +72,25 @@ class advection_adjustment():
         return -175*np.log(875-x_l)+175*np.log(875-x_0)
 
     def compute_time_for_rise(self,rise,z,ml_height):
-        # Kolme osaa!
-        # paljonko noususta on 1 m/s
-        speed_of_start = self.get_fall_speed(z, ml_height)
-        speed_of_risen = self.get_fall_speed(rise+z, ml_height)
-        if speed_of_risen == 5:
+        if rise+z < ml_height-700:
             return rise/5
-        elif speed_of_start == 1:
+        elif z >= ml_height:
             return rise
         else:
             # Väistämättä käydään ml:ssä
             timestep = self.time_in_the_melting_layer(max(0,z-(ml_height-700)),min(max(0,z+rise-(ml_height-700)),700))
             
             # vielä on mahdollista, että 
-            if speed_of_risen == 1:
+            if z+rise >= ml_height:
                 #matka ml_stäylös/1
                 timestep += max(0, z+rise-ml_height)
 
-            if speed_of_start ==5:
+            if z < ml_height - 700:
                 timestep += max(0,(ml_height-700)-z)/5
 
             return timestep
     
-    def compute_next_timestep(self, y, x, z, lvl, u_tuuli, v_tuuli, el_h, ml_height, t, step,closest_x,closest_y):
+    def compute_next_timestep(self, y, x, z, lvl, u_tuuli, v_tuuli, ml_height, t, step,closest_x,closest_y):
         timestep = 100000 # Sekunti
         
         if u_tuuli > 0 and closest_x < self.shape[1]:
@@ -180,7 +150,6 @@ class advection_adjustment():
 
     def advection_from_a_grid_cell(self,lat,lon):             
         z = self.ground_level_dataset.sel(y=lat,x=lon,method="nearest").data[0,0]
-        alku = z
         if np.isnan(z):
             return None
         el_h = self.get_radar_bin_height(lon,lat)
@@ -210,12 +179,13 @@ class advection_adjustment():
             v_tuuli = self.v_wind[step,lvl,closest_y,closest_x]
             ml_height = self.melting_layer_height[step,closest_y,closest_x]
             
-            timestep = self.compute_next_timestep(lat,lon,z,lvl,u_tuuli,v_tuuli,el_h,ml_height,t,step,closest_x,closest_y)
-            
-            lon,lat = self.compute_new_lon_lat_to_past(lon,u_tuuli*timestep,lat,v_tuuli*timestep)
-            
+            timestep = self.compute_next_timestep(lat,lon,z,lvl,u_tuuli,v_tuuli,ml_height,t,step,closest_x,closest_y)
+
+            lon -= u_tuuli*timestep/(111412*np.cos(np.deg2rad(lat)))
+            lat -= v_tuuli*timestep/111412
             z += self.compute_rise(timestep,z,ml_height)
             t -= timestep
+
             el_h = self.get_radar_bin_height(lon,lat)
         
         return (lat,lon,el_h,t)
