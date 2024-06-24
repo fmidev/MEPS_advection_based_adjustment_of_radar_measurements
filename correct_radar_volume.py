@@ -10,12 +10,19 @@ import numpy as np
 import wradlib as wrl
 import xradar as xd
 import time
+import matplotlib.pyplot as plt
 from joblib import Parallel, delayed, parallel_backend
+from scipy.spatial import cKDTree
 
 
 class advection_adjustment():
     def __init__(self,antenna_lat,antenna_lon,antenna_height):
-        self.ground_level_dataset = xr.open_dataset("suomi_korkeusalueet_luvuilla.tif", decode_coords="all").to_dataarray()
+        ground_level_dataset = xr.open_dataset("suomi_korkeusalueet_luvuilla.tif", decode_coords="all").isel(band=0).to_dataarray()
+        #X,Y = np.meshgrid(,ground_level_dataset.y)
+        self.ground_lons = ground_level_dataset.x.values
+        self.ground_lats = ground_level_dataset.y.values
+        #self.ground_level_cKDTree = cKDTree(np.vstack([Y.ravel(), X.ravel()]).T)
+        self.ground_level_dataset = ground_level_dataset.values[0]
         self.weather = xr.open_dataset("latest_smartmet.grib", engine="cfgrib", decode_coords="all").to_dataarray()
         self.u_wind = self.weather.sel(variable='u').data
         self.v_wind = self.weather.sel(variable='v').data
@@ -25,16 +32,25 @@ class advection_adjustment():
         melting_layer_height= (np.abs(self.weather.sel(variable='t')-273.15).argmin(dim='hybrid'))+18
         melting_layer_height.data = np.vectorize(self.level_to_height.get)(melting_layer_height)
         self.melting_layer_height=melting_layer_height.data
-        self.heights  = np.array(list(self.height_to_level.keys()))
+        self.heights = np.array(list(self.height_to_level.keys()))
         self.lats = self.weather['latitude'].values
         self.lons = self.weather['longitude'].values
+        self.cKDTree_weather = cKDTree(np.column_stack((self.weather['latitude'].values.flatten(), self.weather['longitude'].values.flatten())))
         self.antenna_lat = antenna_lat
         self.antenna_lon = antenna_lon
         self.antenna_height = antenna_height
     
     def get_closest_xy_coordinate_in_model(self,x,y):
-        closest = np.sqrt((self.weather['latitude'].values.flatten() - y)**2 + (self.weather['longitude'].values.flatten() - x)**2).argmin()
-        return np.unravel_index(closest, self.shape)
+        dist, idx = self.cKDTree_weather.query((y, x))
+        return np.unravel_index(idx, self.shape)
+        
+    def get_closest_ground_level(self,x,y):
+        #out = float(self.ground_level_dataset.sel(y=y,x=x,method="nearest").data)
+        #_, idx = self.ground_level_cKDTree.query((y, x))
+        i = np.argmin(np.abs(self.ground_lons - x))
+        j = np.argmin(np.abs(self.ground_lats - y))
+        #print(j,i,flush=True)
+        return self.ground_level_dataset[j,i]
 
     # nearest value selection
     def get_model_level(self,z):
@@ -123,8 +139,10 @@ class advection_adjustment():
             dist = np.sqrt(lat_diff_m**2+lon_diff_m**2)*111412
             timestep = min(dist/np.abs(v_tuuli), timestep)        
         
+        
         to_next_height = max(0,self.level_to_height[lvl+17]-self.level_to_height[lvl+18])
         timestep = min(self.compute_time_for_rise(to_next_height,z,ml_height),timestep)
+        
         return max(1, timestep)
 
     def compute_rise(self, timestep, z, ml_height):
@@ -149,17 +167,26 @@ class advection_adjustment():
                 return timestep + rise + rise_in_ml
 
     def advection_from_a_grid_cell(self,lat,lon):             
-        z = self.ground_level_dataset.sel(y=lat,x=lon,method="nearest").data[0,0]
-        if np.isnan(z):
+        
+        z = self.get_closest_ground_level(lon,lat)
+        #print(z, flush=True)
+        if z == 0:
             return None
+        
+        if np.isnan(z): 
+            z = 0
         el_h = self.get_radar_bin_height(lon,lat)
         #Yksi iteraation on sekunti
         t = 0
         step=0
         lat_alku = lat
         lon_alku = lon
+        #start_time = time.time()
         closest_y, closest_x = self.get_closest_xy_coordinate_in_model(lon,lat)
+        
+        
         while el_h > z:            
+            
             # tässä approksimaatio 1 degree lat on 111.412 km
             if np.abs(lat-lat_alku) > 2.5/111.412:
                 if lat > lat_alku:
@@ -174,21 +201,26 @@ class advection_adjustment():
                 else:
                     closest_x -=1
                 lon_alku = lon
+            
             lvl = self.get_model_level(z)
             u_tuuli = self.u_wind[step,lvl,closest_y,closest_x]
             v_tuuli = self.v_wind[step,lvl,closest_y,closest_x]
             ml_height = self.melting_layer_height[step,closest_y,closest_x]
-            
+            # tämä raskas
             timestep = self.compute_next_timestep(lat,lon,z,lvl,u_tuuli,v_tuuli,ml_height,t,step,closest_x,closest_y)
-
             lon -= u_tuuli*timestep/(111412*np.cos(np.deg2rad(lat)))
             lat -= v_tuuli*timestep/111412
             z += self.compute_rise(timestep,z,ml_height)
             t -= timestep
 
             el_h = self.get_radar_bin_height(lon,lat)
+            
+        # approximation to correct the last movement
+        to_next_height = max(0,z-el_h)
+        timestep = self.compute_time_for_rise(to_next_height,el_h,ml_height)
         
-        return (lat,lon,el_h,t)
+        
+        return (lat,lon,el_h,t+timestep)
 
     def get_adjusted_dbz(self):
         filename = "202208281555_fianj_PVOL.h5"
@@ -198,7 +230,8 @@ class advection_adjustment():
             crs=wrl.georef.get_default_projection()
         )
         
-        def process(lat,lon):
+        def process(i,j):
+            lat,lon = radar_lats[i,j],radar_lons[i,j]
             return self.advection_from_a_grid_cell(lat,lon)  
         
         radar_lats = ds1.to_dataarray().y.values
@@ -207,18 +240,34 @@ class advection_adjustment():
         print((radar_lats))
         start_time = time.time()
         with parallel_backend("loky", inner_max_num_threads=2):
-            interp = Parallel(n_jobs=4,verbose=1)(delayed(process)(radar_lats[i,j],radar_lons[i,j])  for i in range(360) for j in range(500))
-        
+            data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j)  for i in range(360) for j in range(500))
         print(time.time()-start_time) 
-        return interp
+
+        new_array = np.zeros((360,500))
+
+        for i in range(360):
+            for j in range(500):
+                    a = i*500+j
+                    if data[a]:
+                        new_array[i,j]= -data[a][3]//(30*5)
+                    else:
+                        new_array[i,j]=np.nan
+
+        ds1["advec"] = (['azimuth','range'], new_array)
+        ds1['advec'].plot(x="x", y="y", cmap="viridis")
+        plt.show()
+        return data
 
 advec = advection_adjustment(60.9038700163364,27.1080600656569,139)
 
 import pickle
-interp = advec.get_adjusted_dbz()
+data = advec.get_adjusted_dbz()
 with open('last_output.pickle', 'wb') as f:
-    pickle.dump(interp, f)
+    pickle.dump(data, f)
 
+#ax1, dem = wrl.vis.plot_ppi(
+#    polarvalues, ax=ax1, r=r, az=coord[:, 0, 1], cmap=mpl.cm.terrain, vmin=0.0
+#)
 # nykyhetkestä ja mennä menneeseen koska menneisyydestä tulevaisuuteen voidaan joutua mappaamaan samalle arvolle, 
 # kun taas toisin päin ei tule ongelmaa sillä aina on menneisyydessä arvo...
 """
