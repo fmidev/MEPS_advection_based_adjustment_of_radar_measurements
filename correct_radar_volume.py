@@ -13,6 +13,7 @@ import time
 import matplotlib.pyplot as plt
 from joblib import Parallel, delayed, parallel_backend
 from scipy.spatial import cKDTree
+from scipy.interpolate import RegularGridInterpolator
 
 
 class advection_adjustment():
@@ -139,7 +140,6 @@ class advection_adjustment():
             dist = np.sqrt(lat_diff_m**2+lon_diff_m**2)*111412
             timestep = min(dist/np.abs(v_tuuli), timestep)        
         
-        
         to_next_height = max(0,self.level_to_height[lvl+17]-self.level_to_height[lvl+18])
         timestep = min(self.compute_time_for_rise(to_next_height,z,ml_height),timestep)
         
@@ -175,6 +175,10 @@ class advection_adjustment():
         
         if np.isnan(z): 
             z = 0
+
+        # Tämän voi päivittää siten että laitetaan x lähin ja y lähin tutkalle
+        #x_closest ja geopy?
+        # TÄmä hoitaa homman
         el_h = self.get_radar_bin_height(lon,lat)
         #Yksi iteraation on sekunti
         t = 0
@@ -186,8 +190,11 @@ class advection_adjustment():
         
         
         while el_h > z:            
-            
+            # Katso ollaanko liikuttu seuraavaan ruutuun
             # tässä approksimaatio 1 degree lat on 111.412 km
+
+
+            # jos heittää lat lon veks. voidaan zxy laskea kerralla...
             if np.abs(lat-lat_alku) > 2.5/111.412:
                 if lat > lat_alku:
                     closest_y +=1
@@ -219,7 +226,7 @@ class advection_adjustment():
         to_next_height = max(0,z-el_h)
         timestep = self.compute_time_for_rise(to_next_height,el_h,ml_height)
         
-        
+        # Tässä lisätään timestep, jotta saadaan hetki jolloin alin kulma leikkaa.
         return (lat,lon,el_h,t+timestep)
 
     def get_adjusted_dbz(self):
@@ -229,42 +236,67 @@ class advection_adjustment():
         ds1 = pvol["sweep_0"].ds.wrl.georef.georeference(
             crs=wrl.georef.get_default_projection()
         )
-        
+        step = 5
+        #Näissä viimeinen jää pois lasketaan ne erikseen.
+        radar_lats = ds1.to_dataarray().y.values[::step,::-step]
+        radar_lons = ds1.to_dataarray().x.values[::step,::-step]
+
         def process(i,j):
             lat,lon = radar_lats[i,j],radar_lons[i,j]
             return self.advection_from_a_grid_cell(lat,lon)  
-        
-        radar_lats = ds1.to_dataarray().y.values
-        radar_lons = ds1.to_dataarray().x.values
 
         print((radar_lats))
         start_time = time.time()
         with parallel_backend("loky", inner_max_num_threads=2):
-            data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j)  for i in range(360) for j in range(500))
+            data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j)  for i in range(0,360//step) for j in range(0,500//step))
         print(time.time()-start_time) 
 
-        new_array = np.zeros((360,500))
+        # Tästä eteenpäin uusiksi.
 
-        for i in range(360):
-            for j in range(500):
-                    a = i*500+j
+        #print(len(data))
+        #print(data[0].shape)
+        new_array = np.zeros((360//step+1,500//step+1))*np.nan
+        for i in range(0,360//step):
+            for j in range(0,500//step):
+                    a = i*500//step+j
                     if data[a]:
-                        new_array[i,j]= -data[a][3]//(30*5)
-                    else:
-                        new_array[i,j]=np.nan
+                        # jakaja liittyy aikaan
+                        new_array[i,-j-1]= -data[a][3]//(30*5)
 
-        ds1["advec"] = (['azimuth','range'], new_array)
+        for j in range(0,500//step):
+            a = j
+            if data[a]:
+                # jakaja liittyy aikaan
+                new_array[360//step,-j-1]= -data[a][3]//(30*5)
+
+        # täytetään toiselta puolelta ensimmäisellä tutkabinillä yleisesti nolla.
+        for i in range(0,360//step+1):
+            u_i = (i +(180//step)) % (360//step)
+            new_array[i][0] = new_array[u_i][2]
+
+        x = np.arange(0,365,step)
+        # Tässä tehdään näin koska nolla bini puuttuu laskuista ja toisen puolen ensimmäinen tutkabini vastaa indeksiä -step
+        y = np.concatenate([np.array([-step]),np.array(np.arange(step,500 + step,step))])
+        
+        interp = RegularGridInterpolator((x,y), new_array)
+        xg, yg = np.meshgrid(np.arange(0,360), np.arange(0,500))
+             
+        final = interp(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
+        
+        ds1["advec"] = (['azimuth','range'], final)
         ds1['advec'].plot(x="x", y="y", cmap="viridis")
         plt.show()
         return data
-
+st = time.time()
 advec = advection_adjustment(60.9038700163364,27.1080600656569,139)
 
 import pickle
 data = advec.get_adjusted_dbz()
+print("time outside",time.time()-st) 
 with open('last_output.pickle', 'wb') as f:
     pickle.dump(data, f)
 
+#xr.merge([temperature_ds, pressure_ds, humidity_ds])
 #ax1, dem = wrl.vis.plot_ppi(
 #    polarvalues, ax=ax1, r=r, az=coord[:, 0, 1], cmap=mpl.cm.terrain, vmin=0.0
 #)
