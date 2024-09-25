@@ -13,7 +13,9 @@ import time
 import matplotlib.pyplot as plt
 from joblib import Parallel, delayed, parallel_backend
 from scipy.spatial import cKDTree
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator, NearestNDInterpolator
+import cartopy.crs as ccrs
+import datetime
 
 
 class advection_adjustment():
@@ -170,8 +172,8 @@ class advection_adjustment():
         
         z = self.get_closest_ground_level(lon,lat)
         #print(z, flush=True)
-        if z == 0:
-            return None
+        #if z == 0:
+        #    return None
         
         if np.isnan(z): 
             z = 0
@@ -188,12 +190,9 @@ class advection_adjustment():
         #start_time = time.time()
         closest_y, closest_x = self.get_closest_xy_coordinate_in_model(lon,lat)
         
-        
         while el_h > z:            
             # Katso ollaanko liikuttu seuraavaan ruutuun
             # tässä approksimaatio 1 degree lat on 111.412 km
-
-
             # jos heittää lat lon veks. voidaan zxy laskea kerralla...
             if np.abs(lat-lat_alku) > 2.5/111.412:
                 if lat > lat_alku:
@@ -230,16 +229,17 @@ class advection_adjustment():
         return (lat,lon,el_h,t+timestep)
 
     def get_adjusted_dbz(self):
-        filename = "202208281555_fianj_PVOL.h5"
+        filename = "/home/myllykos/Documents/mepsi_testisetti/202402132255_fivih_PVOL.h5"
         pvol = xd.io.open_odim_datatree(filename)
 
         ds1 = pvol["sweep_0"].ds.wrl.georef.georeference(
             crs=wrl.georef.get_default_projection()
         )
-        step = 5
+        step_azi = 5
+        step_r = 5
         #Näissä viimeinen jää pois lasketaan ne erikseen.
-        radar_lats = ds1.to_dataarray().y.values[::step,::-step]
-        radar_lons = ds1.to_dataarray().x.values[::step,::-step]
+        radar_lats = ds1.to_dataarray().y.values[::step_azi,::-step_r]
+        radar_lons = ds1.to_dataarray().x.values[::step_azi,::-step_r]
 
         def process(i,j):
             lat,lon = radar_lats[i,j],radar_lons[i,j]
@@ -248,48 +248,139 @@ class advection_adjustment():
         print((radar_lats))
         start_time = time.time()
         with parallel_backend("loky", inner_max_num_threads=2):
-            data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j)  for i in range(0,360//step) for j in range(0,500//step))
+            data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j)  for i in range(0,360//step_azi) for j in range(0,500//step_r))
         print(time.time()-start_time) 
 
         # Tästä eteenpäin uusiksi.
 
         #print(len(data))
         #print(data[0].shape)
-        new_array = np.zeros((360//step+1,500//step+1))*np.nan
-        for i in range(0,360//step):
-            for j in range(0,500//step):
-                    a = i*500//step+j
+        vali_time = time.time()
+        time_vol = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
+
+        new_lat = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
+        new_lon = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
+        el_h = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
+        
+        for i in range(0,360//step_azi):
+            for j in range(0,500//step_r):
+                    a = i*500//step_r+j
                     if data[a]:
                         # jakaja liittyy aikaan
-                        new_array[i,-j-1]= -data[a][3]//(30*5)
+                        if ~np.isnan(data[a][2]):
+                            new_lat[i,-j-1] = data[a][0]
+                            new_lon[i,-j-1] = data[a][1]
+                            el_h[i,-j-1] = data[a][2]
+                            time_vol[i,-j-1] = -data[a][3]//(30*5)
 
-        for j in range(0,500//step):
+        for j in range(0,500//step_r):
             a = j
             if data[a]:
-                # jakaja liittyy aikaan
-                new_array[360//step,-j-1]= -data[a][3]//(30*5)
-
+                if ~np.isnan(data[a][2]):
+                    # jakaja liittyy aikaan
+                    new_lat[360//step_azi,-j-1] = data[a][0]
+                    new_lon[360//step_azi,-j-1] = data[a][1]
+                    el_h[360//step_azi,-j-1] = data[a][2]
+                    time_vol[360//step_azi,-j-1]= -data[a][3]//(30*5)
+        
         # täytetään toiselta puolelta ensimmäisellä tutkabinillä yleisesti nolla.
-        for i in range(0,360//step+1):
-            u_i = (i +(180//step)) % (360//step)
-            new_array[i][0] = new_array[u_i][2]
+        for i in range(0,360//step_azi+1):
+            u_i = (i +(180//step_azi)) % (360//step_azi)
+            new_lat[i][0] = data[a][0]
+            new_lon[i][0] = data[a][1]
+            el_h[i][0] = data[a][2]
+            time_vol[i][0] = time_vol[u_i][2]
 
-        x = np.arange(0,365,step)
+        x = np.arange(0,361,step_azi)
         # Tässä tehdään näin koska nolla bini puuttuu laskuista ja toisen puolen ensimmäinen tutkabini vastaa indeksiä -step
-        y = np.concatenate([np.array([-step]),np.array(np.arange(step,500 + step,step))])
-        
-        interp = RegularGridInterpolator((x,y), new_array)
+        y = np.concatenate([np.array([-step_r]),np.array(np.arange(step_r,500 + step_r,step_r))])
         xg, yg = np.meshgrid(np.arange(0,360), np.arange(0,500))
-             
-        final = interp(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
-        
-        ds1["advec"] = (['azimuth','range'], final)
-        ds1['advec'].plot(x="x", y="y", cmap="viridis")
-        plt.show()
-        return data
-st = time.time()
-advec = advection_adjustment(60.9038700163364,27.1080600656569,139)
 
+        interp_time = RegularGridInterpolator((x,y), time_vol)     
+        final_time = interp_time(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T.round()
+        
+        ds1["# of radar volumes to past for advection correction"] = (['azimuth','range'], final_time)
+        ds1["# of radar volumes to past for advection correction"].plot(x="x", y="y", cmap="viridis")
+        
+        plt.show()
+        plt.close()
+        final_time =  final_time.astype(int)
+
+        interp_lat = RegularGridInterpolator((x,y), new_lat)     
+        final_lat = interp_lat(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
+
+        interp_lon = RegularGridInterpolator((x,y), new_lon)     
+        final_lon = interp_lon(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
+
+        interp_el_h = RegularGridInterpolator((x,y), el_h)     
+        final_el_h = interp_el_h(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
+        
+        ds1["# of radar volumes to past for advection correction"] = (['azimuth','range'], final_time)
+        #ds1["height of the bin"] = (['azimuth','range'], final_el_h)
+        ds1["mapped latitude"] = (['azimuth','range'], final_lat)
+        ds1["mapped longitude"] = (['azimuth','range'], final_lon)
+        vali_time= time.time()
+        
+        advection_corrected_dbz = np.zeros((360,500))*np.nan
+        # Tee lista, jossa on avatut tiedostot timestamppeinä menneeseen.
+        # tässä periaatteessa riittää kerta.
+        moments = {}
+        timestamp = "202402132255"
+        dt = datetime.datetime.strptime(timestamp, "%Y%m%d%H%M")
+
+        for t_i in range(final_time[~np.isnan(final_time)].max()+1):
+            filename = "/home/myllykos/Documents/mepsi_testisetti/"+timestamp+"_fivih_PVOL.h5"
+            dt-=datetime.timedelta(minutes=5)
+            timestamp = datetime.datetime.strftime(dt,"%Y%m%d%H%M")
+            pvol = xd.io.open_odim_datatree(filename)
+
+            moments[t_i] = pvol["sweep_0"].ds.wrl.georef.georeference(
+                crs=wrl.georef.get_default_projection()
+            )['DBZH'].data
+
+            print("valitime3",time.time()-vali_time)
+        
+        vali = ds1.to_dataarray()
+        cKDTree_radar = cKDTree(np.column_stack((vali.y.values.flatten(), vali.x.values.flatten())))
+        #   keksi keino, jolla saadaan lat, lon parista lähin tutkan az,r pari.
+        
+        def get_closest_radar_coordinate(x,y):
+            dist, idx = cKDTree_radar.query((y, x))
+            return np.unravel_index(idx, (360,500))
+        print("valitime3.5",time.time()-vali_time)
+        # Tämän voi rinnakaistaa...
+                
+        def collect_correction(az,r):
+            if ~np.isnan(final_el_h[az,r]):
+                # kerää tästä lähin ajanhetki.
+                az_radar,r_radar = get_closest_radar_coordinate(final_lon[az,r],final_lat[az,r])
+                #print(az_radar,r_radar)
+                return moments[final_time[az,r]][az_radar,r_radar]
+            return np.nan
+
+        with parallel_backend("loky", inner_max_num_threads=2):
+            data = Parallel(n_jobs=4,verbose=1)(delayed(collect_correction)(i,j)  for i in range(0,360) for j in range(0,500))
+         
+        for az in range(360):
+            for r in range(500):
+                advection_corrected_dbz[az][r] = data[az*500+r]
+
+        ds1["advection_corrected_DBZH"] = (['azimuth','range'], advection_corrected_dbz)
+        ds1["advection_corrected_DBZH"].plot(x="x", y="y", cmap="viridis",vmin=-10, vmax=50)
+        print("valitime4",time.time()-vali_time)
+        
+        plt.show()
+        plt.close()
+        ds1["DBZH"].plot(x="x", y="y", cmap="viridis",vmin=-10, vmax=50)
+        
+        plt.show()
+        plt.close()
+        
+        return ds1
+    
+st = time.time()
+advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
+		
 import pickle
 data = advec.get_adjusted_dbz()
 print("time outside",time.time()-st) 
