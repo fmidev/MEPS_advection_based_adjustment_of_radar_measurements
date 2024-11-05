@@ -60,7 +60,7 @@ class advection_adjustment():
         smallest_value = self.heights[np.argmin(index)]
         return self.height_to_level[smallest_value]-18
     
-    def get_radar_bin_height(self, x, y):
+    def get_radar_bin_height(self, x, y, ground):
         #distance_meters=geopy.distance.geodesic((y, x), (self.antenna_lat, self.antenna_lon)).meters
         lat_diff_m = (y-self.antenna_lat)
         lon_diff_m = (x-self.antenna_lon)*np.cos((np.deg2rad(y+self.antenna_lat)/2))
@@ -70,7 +70,7 @@ class advection_adjustment():
         #print(distance_meters)
         if distance_meters > 250000:
             return np.nan
-        return 6371000*4.0/3.0*(np.cos(np.deg2rad(0.3))/(np.cos(np.deg2rad(0.3)+distance_meters/(6371000*4.0/3.0)))-1)+ self.antenna_height
+        return 6371000*4.0/3.0*(np.cos(np.deg2rad(0.3))/(np.cos(np.deg2rad(0.3)+distance_meters/(6371000*4.0/3.0)))-1)+ self.antenna_height - ground
 
     def rise_from_ml_given_time_from_x_0(self,time,x_0):
         # t = int_{x(0)}^{x(time)}1/(5-4x/700)dx, x(0)=0
@@ -169,9 +169,10 @@ class advection_adjustment():
 
     def advection_from_a_grid_cell(self,lat,lon):             
         
-        z = self.get_closest_ground_level(lon,lat)        
-        if np.isnan(z): 
-            z = 0
+        ground = self.get_closest_ground_level(lon,lat)        
+        z = 0
+        if np.isnan(ground): 
+            ground = 0
 
         el_h = self.get_radar_bin_height(lon,lat)
         #Yksi iteraation on sekunti
@@ -200,7 +201,12 @@ class advection_adjustment():
                 else:
                     closest_x -=1
                 lon_alku = lon
-            
+
+            # Paljonko on maantaso
+            ground = self.get_closest_ground_level(lon,lat)        
+            if np.isnan(ground): 
+                ground = 0
+
             lvl = self.get_model_level(z)
             u_tuuli = self.u_wind[step,lvl,closest_y,closest_x]
             v_tuuli = self.v_wind[step,lvl,closest_y,closest_x]
@@ -212,7 +218,7 @@ class advection_adjustment():
             z += self.compute_rise(timestep,z,ml_height)
             t -= timestep
 
-            el_h = self.get_radar_bin_height(lon,lat)
+            el_h = self.get_radar_bin_height(lon,lat, ground)
             
         # approximation to correct the last movement
         to_next_height = max(0,z-el_h)
@@ -221,8 +227,8 @@ class advection_adjustment():
         # Tässä lisätään timestep, jotta saadaan hetki jolloin alin kulma leikkaa.
         return (lat,lon,el_h,t+timestep)
 
-    def get_adjusted_dbz(self):
-        reference_filename = "/home/myllykos/Documents/mepsi_testisetti/202402132255_fivih_PVOL.h5"
+    def get_adjusted_dbz(self, start_time, end_time,reference_filename = "/home/myllykos/Documents/mepsi_testisetti/202402132255_fivih_PVOL.h5"
+        ):
         pvol = xd.io.open_odim_datatree(reference_filename)
 
         ds1 = pvol["sweep_0"].ds.wrl.georef.georeference(
@@ -315,6 +321,7 @@ class advection_adjustment():
         ds1["mapped longitude"] = (['azimuth','range'], final_lon)
         vali_time= time.time()
         
+        """
         advection_corrected_dbz = np.zeros((360,500))*np.nan
         # Tee lista, jossa on avatut tiedostot timestamppeinä menneeseen.
         # tässä periaatteessa riittää kerta.
@@ -343,7 +350,7 @@ class advection_adjustment():
             return np.unravel_index(idx, (360,500))
         print("valitime3.5",time.time()-vali_time)
         # Tämän voi rinnakaistaa...
-                
+        
         def collect_correction(az,r):
             if ~np.isnan(final_el_h[az,r]):
                 # kerää tästä lähin ajanhetki.
@@ -369,8 +376,10 @@ class advection_adjustment():
         
         plt.show()
         plt.close()
-        
+        #xradar.io.export.odim.to_odim(dtree, filename
         return ds1
+        """
+        return None
     
 st = time.time()
 advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
@@ -378,8 +387,8 @@ advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
 import pickle
 data = advec.get_adjusted_dbz()
 print("time outside",time.time()-st) 
-with open('last_output.pickle', 'wb') as f:
-    pickle.dump(data, f)
+#with open('last_output.pickle', 'wb') as f:
+#    pickle.dump(data, f)
 
 #xr.merge([temperature_ds, pressure_ds, humidity_ds])
 #ax1, dem = wrl.vis.plot_ppi(
