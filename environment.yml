@@ -14,5 +14,7 @@ dependencies:
   - rioxarray
   - cfgrib
   - wradlib
+  - joblib
+  - boto3
   - pip:
     - geopy

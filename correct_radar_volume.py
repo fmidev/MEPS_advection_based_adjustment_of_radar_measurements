@@ -13,8 +13,7 @@ import time
 import matplotlib.pyplot as plt
 from joblib import Parallel, delayed, parallel_backend
 from scipy.spatial import cKDTree
-from scipy.interpolate import RegularGridInterpolator, NearestNDInterpolator
-import cartopy.crs as ccrs
+from scipy.interpolate import RegularGridInterpolator
 import datetime
 
 
@@ -26,7 +25,7 @@ class advection_adjustment():
         self.ground_lats = ground_level_dataset.y.values
         #self.ground_level_cKDTree = cKDTree(np.vstack([Y.ravel(), X.ravel()]).T)
         self.ground_level_dataset = ground_level_dataset.values[0]
-        self.weather = xr.open_dataset("latest_smartmet.grib", engine="cfgrib", decode_coords="all").to_dataarray()
+        self.weather = xr.open_dataset("smartmets/combined_data.nc", decode_coords="all").to_dataarray()
         self.u_wind = self.weather.sel(variable='u').data
         self.v_wind = self.weather.sel(variable='v').data
         self.height_to_level = {7573.1:18,7156.3:19,6757.3:20,6375.0: 21,6008.5: 22,5657.1: 23,5320.3: 24, 4997.4: 25, 4688.0: 26, 4391.7: 27, 4108.1: 28, 3836.9: 29, 3577.8: 30, 3330.4: 31, 3094.5: 32, 2870.0: 33, 2656.5: 34, 2454.1: 35, 2262.5: 36, 2081.5: 37, 1911.2: 38, 1751.4: 39, 1602.1: 40, 1463.1: 41, 1334.4: 42, 1215.0: 43, 1104.4: 44, 1001.8: 45, 906.8: 46, 819.0: 47, 737.8: 48, 662.9: 49, 593.8: 50, 530.1: 51, 471.5: 52, 417.6: 53, 368.1: 54, 322.6: 55, 280.7: 56, 242.2: 57, 206.6: 58, 173.7: 59, 143.1: 60, 114.5: 61, 87.5: 62, 61.7: 63, 36.8: 64, 12.2: 65}
@@ -170,27 +169,21 @@ class advection_adjustment():
 
     def advection_from_a_grid_cell(self,lat,lon):             
         
-        z = self.get_closest_ground_level(lon,lat)
-        #print(z, flush=True)
-        #if z == 0:
-        #    return None
-        
+        z = self.get_closest_ground_level(lon,lat)        
         if np.isnan(z): 
             z = 0
 
-        # Tämän voi päivittää siten että laitetaan x lähin ja y lähin tutkalle
-        #x_closest ja geopy?
-        # TÄmä hoitaa homman
         el_h = self.get_radar_bin_height(lon,lat)
         #Yksi iteraation on sekunti
         t = 0
-        step=0
         lat_alku = lat
         lon_alku = lon
         #start_time = time.time()
         closest_y, closest_x = self.get_closest_xy_coordinate_in_model(lon,lat)
-        
-        while el_h > z:            
+
+        while el_h > z:
+            # Naivi aikakehitys            
+            step=-(int(-t)//3600) 
             # Katso ollaanko liikuttu seuraavaan ruutuun
             # tässä approksimaatio 1 degree lat on 111.412 km
             # jos heittää lat lon veks. voidaan zxy laskea kerralla...
@@ -229,8 +222,8 @@ class advection_adjustment():
         return (lat,lon,el_h,t+timestep)
 
     def get_adjusted_dbz(self):
-        filename = "/home/myllykos/Documents/mepsi_testisetti/202402132255_fivih_PVOL.h5"
-        pvol = xd.io.open_odim_datatree(filename)
+        reference_filename = "/home/myllykos/Documents/mepsi_testisetti/202402132255_fivih_PVOL.h5"
+        pvol = xd.io.open_odim_datatree(reference_filename)
 
         ds1 = pvol["sweep_0"].ds.wrl.georef.georeference(
             crs=wrl.georef.get_default_projection()
@@ -240,6 +233,7 @@ class advection_adjustment():
         #Näissä viimeinen jää pois lasketaan ne erikseen.
         radar_lats = ds1.to_dataarray().y.values[::step_azi,::-step_r]
         radar_lons = ds1.to_dataarray().x.values[::step_azi,::-step_r]
+        print(radar_lats)
 
         def process(i,j):
             lat,lon = radar_lats[i,j],radar_lons[i,j]
