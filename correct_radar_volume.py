@@ -174,7 +174,7 @@ class advection_adjustment():
         if np.isnan(ground): 
             ground = 0
 
-        el_h = self.get_radar_bin_height(lon,lat)
+        el_h = self.get_radar_bin_height(lon,lat,ground)
         #Yksi iteraation on sekunti
         t = 0
         lat_alku = lat
@@ -385,7 +385,7 @@ st = time.time()
 advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
 		
 import pickle
-data = advec.get_adjusted_dbz()
+data = advec.get_adjusted_dbz(0,0)
 print("time outside",time.time()-st) 
 #with open('last_output.pickle', 'wb') as f:
 #    pickle.dump(data, f)
