@@ -8,7 +8,6 @@ from joblib import Parallel, delayed, parallel_backend
 from scipy.spatial import cKDTree
 from scipy.interpolate import RegularGridInterpolator
 import datetime
-import pickle
 
 class advection_adjustment():
     def __init__(self,antenna_lat,antenna_lon,antenna_height):
@@ -161,7 +160,8 @@ class advection_adjustment():
 
         el_h = self.get_radar_bin_height(lon,lat,ground)
         #Yksi iteraation on sekunti
-        t = self.current_time.minute*60 + self.current_time.second #starting_seconds_with_respect_to_first_hour # minutes*60 + seconds
+        time_correction = self.current_time.minute*60 + self.current_time.second #starting_seconds_with_respect_to_first_hour # minutes*60 + seconds
+        t = 0
         lat_alku = lat
         lon_alku = lon
         closest_y, closest_x = self.get_closest_xy_coordinate_in_model(lon,lat)
@@ -172,7 +172,7 @@ class advection_adjustment():
         # jos käyttäisi timedeltaa vaan suoraan?
         while el_h > z:
             # Naiivi edelliseen tuntiin menevä aika-askel  
-            step=int(np.floor(t/3600) + starting_hour)
+            step=int(np.floor((t+time_correction)/3600) + starting_hour)
             # Katso ollaanko liikuttu seuraavaan ruutuun
             # tässä approksimaatio 1 degree lat on 111.412 km
             # jos heittää lat lon veks. voidaan zxy laskea kerralla...
@@ -231,7 +231,7 @@ class advection_adjustment():
         start_time = datetime.datetime.strptime(starttime_str, "%Y%m%d%H%M")
         end_time = start_time+ datetime.timedelta(hours=3)
         current_time = start_time
-        while current_time < end_time:
+        while current_time <= end_time:
             self.current_time = current_time
 
             print("now computing:",current_time)
@@ -243,11 +243,6 @@ class advection_adjustment():
             with parallel_backend("loky", inner_max_num_threads=2):
                 data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j)  for i in range(0,360//step_azi) for j in range(0,500//step_r))
             
-            # Tästä eteenpäin uusiksi.
-
-            #print(len(data))
-            #print(data[0].shape)
-            vali_time = time.time()
             time_vol = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
 
             new_lat = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
@@ -290,7 +285,6 @@ class advection_adjustment():
 
             interp_time = RegularGridInterpolator((x,y), time_vol)     
             final_time = interp_time(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T.round()
-            final_time =  final_time.astype(int)
 
             interp_lat = RegularGridInterpolator((x,y), new_lat)     
             final_lat = interp_lat(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
@@ -300,19 +294,12 @@ class advection_adjustment():
 
             interp_el_h = RegularGridInterpolator((x,y), el_h)     
             final_el_h = interp_el_h(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
-            
-            out = {
-                "lon":(['azimuth','range'], final_lon),
-                "lat":(['azimuth','range'], final_lat),
-                "el_h":(['azimuth','range'], final_el_h),
-                "time":(['azimuth','range'], final_time)
-                   }
-
 
             cur_str = datetime.datetime.strftime(current_time, "%Y%m%d%H%M")
-            with open('correction_maps/'+cur_str+'.pickle', 'wb') as f:
-                pickle.dump(out, f)
-
+            np.save('correction_maps/'+cur_str+'_lon', final_lon)
+            np.save('correction_maps/'+cur_str+'_lat', final_lat)
+            np.save('correction_maps/'+cur_str+'_time', final_time)
+            np.save('correction_maps/'+cur_str+'_el', final_el_h)
 
             current_time += datetime.timedelta(minutes=5)
         
@@ -321,5 +308,5 @@ if __name__ == '__main__':
     advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
     # hae kellonaika ja tee edellisen tunnin perusteella tuo homma.
 
-    data = advec.get_adjusted_dbz("202411070700")
+    data = advec.get_adjusted_dbz("202411080600")
     print("time outside",time.time()-st) 
