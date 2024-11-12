@@ -4,6 +4,7 @@ import datetime
 from joblib import Parallel, delayed, parallel_backend
 import wradlib as wrl
 import xradar as xd
+import xarray as xr
 import os
 import glob
 
@@ -96,25 +97,26 @@ def correct_radar_volumes(starttime_str):
         for az in range(360):
             for r in range(500):
                 advection_corrected_dbz[az][r] = data[az*500+r]
-        """
-        ds1["DBZH"].plot(x="x", y="y", cmap="viridis",vmin=-10, vmax=50)
         
-        #xradar.io.export.odim.to_odim(dtree, filename
-        return ds1
-        """
-        #print(pvol)
+        advection_corrected_dbz[np.isnan(advection_corrected_dbz)] = -500
         single_sweep_data = pvol['sweep_0']
-        cleaned_data = single_sweep_data.drop_vars([var for var in single_sweep_data.data_vars if var != 'DBZH'])
-        cleaned_data['advection_corrected'] = advection_corrected_dbz
-        xd.io.to_odim(cleaned_data,'corrected_field/'+curtime_str+'.h5', source = ???)
-        break
+        vali = single_sweep_data['DBZH']
+        root = pvol.copy()
+
+        single_sweep_data['DBZH'].data = advection_corrected_dbz#, dims=single_sweep_data.dims, coords=single_sweep_data.coords)
+        single_sweep_data['DBZH'].attrs['_Undetect'] = -500
+        for var in ["CSP","VRADH","WRADH","ZDR","KDP","RHOHV","DBZHC","VRADDH","TH","SQIH","PHIDP","HCLASS","ZDRC","TV","SNR","PMI"]:
+            single_sweep_data[var] = None
+        
+        root._children.clear()
+        root._children["sweep_0"]= single_sweep_data
+        print(root)
+        
+        xd.io.to_odim(root,'corrected_field/'+curtime_str+'.h5', source = "WIGOS:0-246-0-107275,RAD:FI53,PLC:Vihti,NOD:fivih")
+        
         current_time += datetime.timedelta(minutes=5)
 
 if __name__ == '__main__':
     
-    timestr = "202411080600"
-    #           202411070700
+    timestr = "202411120600"
     correct_radar_volumes(timestr)
-    # poista vanhat
-    #for file in glob.glob(os.path.join("correction_maps", "*.npy")):
-    #    os.remove(file)

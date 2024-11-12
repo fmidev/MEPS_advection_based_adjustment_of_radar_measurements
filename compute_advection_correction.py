@@ -308,5 +308,5 @@ if __name__ == '__main__':
     advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
     # hae kellonaika ja tee edellisen tunnin perusteella tuo homma.
 
-    data = advec.get_adjusted_dbz("202411080600")
+    data = advec.get_adjusted_dbz("202411120600")
     print("time outside",time.time()-st) 
