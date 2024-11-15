@@ -8,6 +8,7 @@ from joblib import Parallel, delayed, parallel_backend
 from scipy.spatial import cKDTree
 from scipy.interpolate import RegularGridInterpolator
 import datetime
+import argparse
 
 class advection_adjustment():
     def __init__(self,antenna_lat,antenna_lon,antenna_height):
@@ -33,13 +34,12 @@ class advection_adjustment():
         self.antenna_lat = antenna_lat
         self.antenna_lon = antenna_lon
         self.antenna_height = antenna_height
-        self.current_time = None
     
-    def get_closest_xy_coordinate_in_model(self,x,y):
+    def get_nearest_xy_coordinate_in_model(self,x,y):
         dist, idx = self.cKDTree_weather.query((y, x))
         return np.unravel_index(idx, self.shape)
         
-    def get_closest_ground_level(self,x,y):
+    def get_nearest_ground_level(self,x,y):
         #out = float(self.ground_level_dataset.sel(y=y,x=x,method="nearest").data)
         #_, idx = self.ground_level_cKDTree.query((y, x))
         i = np.argmin(np.abs(self.ground_lons - x))
@@ -54,7 +54,6 @@ class advection_adjustment():
         return self.height_to_level[smallest_value]-18
     
     def get_radar_bin_height(self, x, y, ground):
-        #distance_meters=geopy.distance.geodesic((y, x), (self.antenna_lat, self.antenna_lon)).meters
         lat_diff_m = (y-self.antenna_lat)
         lon_diff_m = (x-self.antenna_lon)*np.cos((np.deg2rad(y+self.antenna_lat)/2))
         #approximate_distance
@@ -64,10 +63,6 @@ class advection_adjustment():
         if distance_meters > 250000:
             return np.nan
         return 6371000*4.0/3.0*(np.cos(np.deg2rad(0.3))/(np.cos(np.deg2rad(0.3)+distance_meters/(6371000*4.0/3.0)))-1)+ self.antenna_height - ground
-
-    def rise_from_ml_given_time_from_x_0(self,time,x_0):
-        # here time and x_0 are with respect to the beginning of melting layer
-        return -np.exp(-time/175 + np.log(875-x_0))+875
     
     def time_in_the_melting_layer(self,x_0,x_l):
         # Note tämä on laskettu siten että x_0 on ml:n alakohta!
@@ -78,21 +73,21 @@ class advection_adjustment():
             return rise/5
         elif z >= ml_height:
             return rise
-        else:
-            # Väistämättä käydään ml:ssä
-            timestep = self.time_in_the_melting_layer(max(0,z-(ml_height-700)),min(max(0,z+rise-(ml_height-700)),700))
-            
-            # vielä on mahdollista, että 
-            if z+rise >= ml_height:
-                #matka ml_stäylös/1
-                timestep += max(0, z+rise-ml_height)
-
-            if z < ml_height - 700:
-                timestep += max(0,(ml_height-700)-z)/5
-
-            return timestep
     
-    def compute_next_timestep(self, y, x, z, lvl, u_tuuli, v_tuuli, ml_height, t, step,closest_x,closest_y):
+        # Väistämättä käydään ml:ssä
+        timestep = self.time_in_the_melting_layer(max(0,z-(ml_height-700)),min(max(0,z+rise-(ml_height-700)),700))
+        
+        # vielä on mahdollista, että 
+        if z+rise >= ml_height:
+            #matka ml_stäylös/1
+            timestep += max(0, z+rise-ml_height)
+
+        if z < ml_height - 700:
+            timestep += max(0,(ml_height-700)-z)/5
+
+        return timestep
+    
+    def compute_next_timestep(self, y, x, z, lvl, u_tuuli, v_tuuli, ml_height,closest_x,closest_y):
         timestep = 100000 # Sekunti
         
         if u_tuuli > 0 and closest_x < self.shape[1]:
@@ -130,44 +125,53 @@ class advection_adjustment():
         
         return max(1, timestep)
 
-    def compute_rise(self, timestep, z, ml_height):
-        # 1. nousun kesto ml_heightiin -700
-        kesto = max(ml_height-700-z,0)/5
-        # jos kesto on suurempi kuin timestep voidaan palauttaa arvo
+    def compute_rise(self, timestep, alku_korkeus, ml_height):
+        nousun_kesto_melting_layeriin_jos_alku_korkeus_on_pienempi_kuin_ml_alaraja = max(ml_height-700-alku_korkeus,0)/5
+        timestepissa_noustaan_melting_layeriin =  nousun_kesto_melting_layeriin_jos_alku_korkeus_on_pienempi_kuin_ml_alaraja >= timestep
         
-        if kesto >= timestep:
+        if timestepissa_noustaan_melting_layeriin:
             return timestep*5
-        elif z > ml_height:
-            return timestep
-        else:
-            rise = kesto*5
-            timestep -= kesto
-            x_0 = rise+z
-            rise_from_ml = self.rise_from_ml_given_time_from_x_0(timestep, x_0-(ml_height-700))
-            if rise_from_ml < 700:
-                return (ml_height-700)+rise_from_ml - z
-            else:
-                rise_in_ml = 700-(x_0-(ml_height-700))
-                timestep -= self.time_in_the_melting_layer(x_0-(ml_height-700),700)
-                return timestep + rise + rise_in_ml
-
-    def advection_from_a_grid_cell(self,lat,lon):             
         
-        ground = self.get_closest_ground_level(lon,lat)        
+        nousu_alkaa_melting_layerin_paalta = alku_korkeus > ml_height
+        if nousu_alkaa_melting_layerin_paalta:
+            return timestep
+
+        nousu_melting_layeriin = nousun_kesto_melting_layeriin_jos_alku_korkeus_on_pienempi_kuin_ml_alaraja*5
+        timestep_mahdollisen_melting_layeriin_nousun_jalkeen = timestep - nousun_kesto_melting_layeriin_jos_alku_korkeus_on_pienempi_kuin_ml_alaraja
+
+        korkeus_melting_layerin_alarajasta = nousu_melting_layeriin+alku_korkeus-(ml_height-700)
+        rise_from_ml_using_analytical_formula = -np.exp(-timestep_mahdollisen_melting_layeriin_nousun_jalkeen/175 + np.log(875-korkeus_melting_layerin_alarajasta))+875
+        nousu_jaa_melting_layerin_sisaan = rise_from_ml_using_analytical_formula < 700
+
+        if nousu_jaa_melting_layerin_sisaan:
+            return (ml_height-700)+rise_from_ml_using_analytical_formula - alku_korkeus
+        
+        rise_in_ml = 700-(korkeus_melting_layerin_alarajasta)
+        timestep_melting_layerin_ylaosassa = timestep_mahdollisen_melting_layeriin_nousun_jalkeen - self.time_in_the_melting_layer(korkeus_melting_layerin_alarajasta,700)
+        
+        # ollaan aloitettu joko meltin layerissa tai sen alla ja ollaan noustu sen päälle
+        # tässä jos ollaan aluksi ml:ssa tai sen päällä, nousu_melting_layeriin on 0. 
+        # tällöin jos ollaan melting_layerissa aluksi rise_in_ml kertoo nousun ml:n ylärajaan koska 
+        # nousun jääminen ml:n sisään on otettu aiemmin huomioon.
+        # timestep ml:n päällä tulee 
+        return timestep_melting_layerin_ylaosassa + nousu_melting_layeriin + rise_in_ml - alku_korkeus
+
+    def advection_from_a_grid_cell(self,lat,lon, current_time):
+        ground = self.get_nearest_ground_level(lon,lat)        
         z = 0
         if np.isnan(ground): 
             ground = 0
 
         el_h = self.get_radar_bin_height(lon,lat,ground)
         #Yksi iteraation on sekunti
-        time_correction = self.current_time.minute*60 + self.current_time.second #starting_seconds_with_respect_to_first_hour # minutes*60 + seconds
+        time_correction = current_time.minute*60 + current_time.second #starting_seconds_with_respect_to_first_hour # minutes*60 + seconds
         t = 0
         lat_alku = lat
         lon_alku = lon
-        closest_y, closest_x = self.get_closest_xy_coordinate_in_model(lon,lat)
+        closest_y, closest_x = self.get_nearest_xy_coordinate_in_model(lon,lat)
         
         first_timestamp = self.weather.time.data
-        starting_hour = ((np.datetime64(self.current_time)-first_timestamp).astype('timedelta64[s]')/3600).astype(int)
+        starting_hour = ((np.datetime64(current_time)-first_timestamp).astype('timedelta64[s]')/3600).astype(int)
         #starting_hourin tilalle tunnit alusta current_timeen
         # jos käyttäisi timedeltaa vaan suoraan?
         while el_h > z:
@@ -191,7 +195,7 @@ class advection_adjustment():
                 lon_alku = lon
 
             # Paljonko on maantaso
-            ground = self.get_closest_ground_level(lon,lat)        
+            ground = self.get_nearest_ground_level(lon,lat)        
             if np.isnan(ground): 
                 ground = 0
 
@@ -200,7 +204,7 @@ class advection_adjustment():
             v_tuuli = self.v_wind[step,lvl,closest_y,closest_x]
             ml_height = self.melting_layer_height[step,closest_y,closest_x]
             # tämä raskas
-            timestep = self.compute_next_timestep(lat,lon,z,lvl,u_tuuli,v_tuuli,ml_height,t,step,closest_x,closest_y)
+            timestep = self.compute_next_timestep(lat,lon,z,lvl,u_tuuli,v_tuuli,ml_height,closest_x,closest_y)
             lon -= u_tuuli*timestep/(111412*np.cos(np.deg2rad(lat)))
             lat -= v_tuuli*timestep/111412
             z += self.compute_rise(timestep,z,ml_height)
@@ -232,16 +236,15 @@ class advection_adjustment():
         end_time = start_time+ datetime.timedelta(hours=3)
         current_time = start_time
         while current_time <= end_time:
-            self.current_time = current_time
 
             print("now computing:",current_time)
             def process(i,j):
                 lat,lon = radar_lats[i,j],radar_lons[i,j]
-                return self.advection_from_a_grid_cell(lat,lon)  
+                return self.advection_from_a_grid_cell(lat,lon, current_time)  
 
             #print((radar_lats))
             with parallel_backend("loky", inner_max_num_threads=2):
-                data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j)  for i in range(0,360//step_azi) for j in range(0,500//step_r))
+                data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j,)  for i in range(0,360//step_azi) for j in range(0,500//step_r))
             
             time_vol = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
 
@@ -251,24 +254,22 @@ class advection_adjustment():
             
             for i in range(0,360//step_azi):
                 for j in range(0,500//step_r):
-                        a = i*500//step_r+j
-                        if data[a]:
-                            # jakaja liittyy aikaan
-                            if ~np.isnan(data[a][2]):
-                                new_lat[i,-j-1] = data[a][0]
-                                new_lon[i,-j-1] = data[a][1]
-                                el_h[i,-j-1] = data[a][2]
-                                time_vol[i,-j-1] = -data[a][3]//(30*5)
+                    a = i*500//step_r+j
+                    if data[a]:
+                        if ~np.isnan(data[a][2]):
+                            new_lat[i,-j-1] = data[a][0]
+                            new_lon[i,-j-1] = data[a][1]
+                            el_h[i,-j-1] = data[a][2]
+                            time_vol[i,-j-1] = -data[a][3]/(30*5)
 
             for j in range(0,500//step_r):
                 a = j
                 if data[a]:
                     if ~np.isnan(data[a][2]):
-                        # jakaja liittyy aikaan
                         new_lat[360//step_azi,-j-1] = data[a][0]
                         new_lon[360//step_azi,-j-1] = data[a][1]
                         el_h[360//step_azi,-j-1] = data[a][2]
-                        time_vol[360//step_azi,-j-1]= -data[a][3]//(30*5)
+                        time_vol[360//step_azi,-j-1]= -data[a][3]/(30*5)
             
             # täytetään toiselta puolelta ensimmäisellä tutkabinillä yleisesti nolla.
             for i in range(0,360//step_azi+1):
@@ -279,21 +280,23 @@ class advection_adjustment():
                 time_vol[i][0] = time_vol[u_i][2]
 
             x = np.arange(0,361,step_azi)
-            # Tässä tehdään näin koska nolla bini puuttuu laskuista ja toisen puolen ensimmäinen tutkabini vastaa indeksiä -step
             y = np.concatenate([np.array([-step_r]),np.array(np.arange(step_r,500 + step_r,step_r))])
             xg, yg = np.meshgrid(np.arange(0,360), np.arange(0,500))
+            
+            measured_points = (x,y)
+            points_in_which_to_interpolate = np.array([xg.flatten(),yg.flatten()]).T
+            
+            interp_time = RegularGridInterpolator(measured_points, time_vol)     
+            final_time = interp_time(points_in_which_to_interpolate).reshape((500,360)).T.round()
 
-            interp_time = RegularGridInterpolator((x,y), time_vol)     
-            final_time = interp_time(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T.round()
+            interp_lat = RegularGridInterpolator(measured_points, new_lat)     
+            final_lat = interp_lat(points_in_which_to_interpolate).reshape((500,360)).T
 
-            interp_lat = RegularGridInterpolator((x,y), new_lat)     
-            final_lat = interp_lat(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
+            interp_lon = RegularGridInterpolator(measured_points, new_lon)     
+            final_lon = interp_lon(points_in_which_to_interpolate).reshape((500,360)).T
 
-            interp_lon = RegularGridInterpolator((x,y), new_lon)     
-            final_lon = interp_lon(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
-
-            interp_el_h = RegularGridInterpolator((x,y), el_h)     
-            final_el_h = interp_el_h(np.array([xg.flatten(),yg.flatten()]).T).reshape((500,360)).T
+            interp_el_h = RegularGridInterpolator(measured_points, el_h)     
+            final_el_h = interp_el_h(points_in_which_to_interpolate).reshape((500,360)).T
 
             cur_str = datetime.datetime.strftime(current_time, "%Y%m%d%H%M")
             np.save('correction_maps/'+cur_str+'_lon', final_lon)

@@ -4,9 +4,7 @@ import datetime
 from joblib import Parallel, delayed, parallel_backend
 import wradlib as wrl
 import xradar as xd
-import xarray as xr
-import os
-import glob
+import argparse
 
 
 def correct_radar_volumes(starttime_str):
@@ -97,11 +95,11 @@ def correct_radar_volumes(starttime_str):
         for az in range(360):
             for r in range(500):
                 advection_corrected_dbz[az][r] = data[az*500+r]
-        
+         
         advection_corrected_dbz[np.isnan(advection_corrected_dbz)] = -500
-        single_sweep_data = pvol['sweep_0']
+        single_sweep_data = current_to_be_corrected['sweep_0']
         vali = single_sweep_data['DBZH']
-        root = pvol.copy()
+        root = current_to_be_corrected.copy()
 
         single_sweep_data['DBZH'].data = advection_corrected_dbz#, dims=single_sweep_data.dims, coords=single_sweep_data.coords)
         single_sweep_data['DBZH'].attrs['_Undetect'] = -500
@@ -110,13 +108,26 @@ def correct_radar_volumes(starttime_str):
         
         root._children.clear()
         root._children["sweep_0"]= single_sweep_data
-        print(root)
         
         xd.io.to_odim(root,'corrected_field/'+curtime_str+'.h5', source = "WIGOS:0-246-0-107275,RAD:FI53,PLC:Vihti,NOD:fivih")
         
         current_time += datetime.timedelta(minutes=5)
 
 if __name__ == '__main__':
-    
+    #if len(sys.argv) > 1:
+    #    user_input = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        description="Compute ODIM h5 files using the advection correction mappings created in compute_advection_correction.py"
+    )
+
+    parser.add_argument("starttime", help="start time (YYYYmmddHHMM)")
+    parser.add_argument("endtime", help="end time (YYYYmmddHHMM)")
+    parser.add_argument("config", help="configuration profile to use")
+
+    args = parser.parse_args()
+
+    starttime = datetime.strptime(args.starttime, "%Y%m%d%H%M")
+    endtime = datetime.strptime(args.endtime, "%Y%m%d%H%M")
+
     timestr = "202411120600"
     correct_radar_volumes(timestr)
