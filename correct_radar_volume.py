@@ -8,18 +8,11 @@ import argparse
 
 
 def correct_radar_volumes(starttime_str):
-    # Tee lista, jossa on avatut tiedostot timestamppeinä menneeseen.
-    # tässä periaatteessa riittää kerta.
     moments = {}
     datet_orig = datetime.datetime.strptime(starttime_str, "%Y%m%d%H%M")
     datet = datet_orig
     first_times = np.load("correction_maps/"+starttime_str+"_time.npy")
     
-    # Avaa muistiin alkuun kaikki noi oleelliset, sitten seuraavat ja sitten seuraavat etc.
-    # laske korjaus yhdelle
-    # sitten hae seuraavan tarpeet ja hyödynnä vanhoja hyödyksi
-    # laske korjaus yhdelle
-    # jne...
     for t_i in range(int(first_times[~np.isnan(first_times)].max())+1):
         timestamp = datetime.datetime.strftime(datet,"%Y%m%d%H%M")
         filename = "/arch/radar/HDF5/"+str(datet.year)+"/"+str(datet.month).zfill(2)+"/"+str(datet.day).zfill(2)+"/radar/polar/fivih/"+timestamp+"_radar.polar.fivih.h5"
@@ -40,19 +33,11 @@ def correct_radar_volumes(starttime_str):
     vali = vali.to_dataarray()
     
     cKDTree_radar = cKDTree(np.column_stack((vali.y.values.flatten(), vali.x.values.flatten())))
-    #   keksi keino, jolla saadaan lat, lon parista lähin tutkan az,r pari.
     
     def get_closest_radar_coordinate(x,y):
         dist, idx = cKDTree_radar.query((y, x))
         return np.unravel_index(idx, (360,500))
     
-
-    # tähän looppi ajan yli.
-    # 1. avaa filut. 
-    # 2. loop min max yli ja katso tarvitseeko uutta dt lisätä momentsiin.
-    # 3. aja sitten collect collectionit.
-    # 4. tallenna data esim. kopioimalla data alkuperäisen volyymin kopioon 
-
     end_time = datet_orig + datetime.timedelta(hours=3)
     current_time = datet_orig
     while current_time <= end_time:
@@ -63,7 +48,6 @@ def correct_radar_volumes(starttime_str):
         final_times = np.load("correction_maps/"+curtime_str+"_time.npy")
 
         last_in_past = int(final_times[~np.isnan(final_times)].max())
-        # loop until the last in past to add the necessary values to the moments dictionary
         datet = current_time
         mapping_to_timestamp = {}
         for t_i in range(last_in_past+1):
@@ -114,20 +98,12 @@ def correct_radar_volumes(starttime_str):
         current_time += datetime.timedelta(minutes=5)
 
 if __name__ == '__main__':
-    #if len(sys.argv) > 1:
-    #    user_input = sys.argv[1]
     parser = argparse.ArgumentParser(
         description="Compute ODIM h5 files using the advection correction mappings created in compute_advection_correction.py"
     )
-
     parser.add_argument("starttime", help="start time (YYYYmmddHHMM)")
-    parser.add_argument("endtime", help="end time (YYYYmmddHHMM)")
-    parser.add_argument("config", help="configuration profile to use")
-
+    #parser.add_argument("config", help="configuration profile to use")
     args = parser.parse_args()
-
     starttime = datetime.strptime(args.starttime, "%Y%m%d%H%M")
-    endtime = datetime.strptime(args.endtime, "%Y%m%d%H%M")
 
-    timestr = "202411120600"
-    correct_radar_volumes(timestr)
+    correct_radar_volumes(starttime)
