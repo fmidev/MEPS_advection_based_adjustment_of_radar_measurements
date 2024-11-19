@@ -87,7 +87,7 @@ def correct_radar_volumes(starttime_str):
 
         single_sweep_data['DBZH'].data = advection_corrected_dbz#, dims=single_sweep_data.dims, coords=single_sweep_data.coords)
         single_sweep_data['DBZH'].attrs['_Undetect'] = -500
-        for var in ["CSP","VRADH","WRADH","ZDR","KDP","RHOHV","DBZHC","VRADDH","TH","SQIH","PHIDP","HCLASS","ZDRC","TV","SNR","PMI"]:
+        for var in ["CSP","VRADH","WRADH","ZDR","KDP","RHOHV","DBZHC","VRADDH","TH","SQIH","PHIDP","HCLASS","ZDRC","TV","SNR","PMI","DBZV"]:
             single_sweep_data[var] = None
         
         root._children.clear()
