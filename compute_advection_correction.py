@@ -217,7 +217,7 @@ class advection_adjustment():
         # Tässä lisätään timestep, jotta saadaan hetki jolloin alin kulma leikkaa.
         return (lat,lon,el_h,t+timestep)
 
-    def get_adjusted_dbz(self, starttime_str, reference_filename = "/arch/radar/HDF5/2022/07/07/radar/polar/fivih/202207070000_radar.polar.fivih.h5"
+    def get_adjusted_dbz(self, starttime_str, reference_filename = "/arch/radar/HDF5/2022/07/07/radar/polar/fiuta/202207070000_radar.polar.fiuta.h5"
         ):
         pvol = xd.io.open_odim_datatree(reference_filename)
 
@@ -313,7 +313,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     starttime = args.starttime
     
-    advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
+    advec = advection_adjustment(64.7749301232398,26.3188800774515,118)
     # hae kellonaika ja tee edellisen tunnin perusteella tuo homma.
 
     data = advec.get_adjusted_dbz(starttime)

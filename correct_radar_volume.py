@@ -16,11 +16,10 @@ def correct_radar_volumes(starttime_str):
     
     for t_i in range(int(first_times[~np.isnan(first_times)].max())+1):
         timestamp = datetime.datetime.strftime(datet,"%Y%m%d%H%M")
-        filename = "/arch/radar/HDF5/"+str(datet.year)+"/"+str(datet.month).zfill(2)+"/"+str(datet.day).zfill(2)+"/radar/polar/fivih/"+timestamp+"_radar.polar.fivih.h5"
+        filename = "/arch/radar/HDF5/"+str(datet.year)+"/"+str(datet.month).zfill(2)+"/"+str(datet.day).zfill(2)+"/radar/polar/fiuta/"+timestamp+"_radar.polar.fiuta.h5"
         
         pvol = xd.io.open_odim_datatree(filename)
         if t_i == 0:
-            print("adding_vali")
             current_to_be_corrected = pvol
     
             vali = pvol["sweep_0"].ds.wrl.georef.georeference(
@@ -57,7 +56,7 @@ def correct_radar_volumes(starttime_str):
             if not datet in moments.keys():
                 timestamp = datetime.datetime.strftime(datet,"%Y%m%d%H%M")
                 print(timestamp, flush=True)
-                filename = f"/arch/radar/HDF5/"+str(datet.year)+"/"+str(datet.month).zfill(2)+"/"+str(datet.day).zfill(2)+"/radar/polar/fivih/"+timestamp+"_radar.polar.fivih.h5"
+                filename = f"/arch/radar/HDF5/"+str(datet.year)+"/"+str(datet.month).zfill(2)+"/"+str(datet.day).zfill(2)+"/radar/polar/fiuta/"+timestamp+"_radar.polar.fiuta.h5"
                 
                 pvol = xd.io.open_odim_datatree(filename)
                 
@@ -102,8 +101,7 @@ def correct_radar_volumes(starttime_str):
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, curtime_str+'.h5')
 
-        xd.io.to_odim(root, file_path, source = "WIGOS:0-246-0-107275,RAD:FI53,PLC:Vihti,NOD:fivih")
-        
+        xd.io.to_odim(root, file_path, source = "WIGOS:0-246-0-101872,WMO:02870,RAD:FI47,PLC:Utajaervi,NOD:fiuta")        
         current_time += datetime.timedelta(minutes=5)
 
 if __name__ == '__main__':
