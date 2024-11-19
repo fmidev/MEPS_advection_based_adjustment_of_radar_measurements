@@ -311,7 +311,7 @@ if __name__ == '__main__':
     parser.add_argument("starttime", help="start time (YYYYmmddHHMM)")
     #parser.add_argument("config", help="configuration profile to use")
     args = parser.parse_args()
-    starttime = datetime.strptime(args.starttime, "%Y%m%d%H%M")
+    starttime = args.starttime
     
     advec = advection_adjustment(60.5561900138855,24.4955920055509,181)
     # hae kellonaika ja tee edellisen tunnin perusteella tuo homma.
