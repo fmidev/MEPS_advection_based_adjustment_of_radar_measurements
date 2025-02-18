@@ -20,14 +20,14 @@ file_list = {
     "Puolanka_Paljakka.csv": (64.66, 28.06)
 }
 
-radar_filename = "/home/myllykos/Documents/programming/MEPS_advection_based_adjustment_of_radar_measurements/corrected_field/{year:02d}/{month:02d}/{day:02d}/{year:02d}{month:02d}{day:02d}{hour:02d}{second:02d}.h5"
+#radar_filename = "/home/myllykos/Documents/programming/MEPS_advection_based_adjustment_of_radar_measurements/corrected_field/{year:02d}/{month:02d}/{day:02d}/{year:02d}{month:02d}{day:02d}{hour:02d}{second:02d}.h5"
+radar_filename = "/arch/radar/HDF5/{year:02d}/{month:02d}/{day:02d}/radar/polar/fiuta/{year:02d}{month:02d}{day:02d}{hour:02d}{second:02d}_radar.polar.fiuta.h5"
 
 shape = None
 
 first_date = datetime(2024,11,19,6,0)
 
 end_date = datetime(2025,2,14,16,0)
-end_date= datetime(2025,11,19,7,0)
 radar_h5_file =radar_filename.format(
                         year=first_date.year,
                         month=first_date.month,
