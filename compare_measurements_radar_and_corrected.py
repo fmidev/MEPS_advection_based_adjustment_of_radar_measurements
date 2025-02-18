@@ -85,7 +85,7 @@ for filename in file_list.keys():
         #exit()
     #tallenna tuo lista filuksi!
     df = pd.DataFrame(radar_measurements, columns=['Date', 'Value'])
-    filename_out = 'advection_corrected_at_aws/'+ filename
+    filename_out = 'uncorrected_at_aws/'+ filename
 
     # Write to CSV
     df.to_csv(filename_out, index=False)
