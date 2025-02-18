@@ -36,8 +36,9 @@ radar_h5_file =radar_filename.format(
                         minute=first_date.minute,
                         second=first_date.second,
                     )
-pvol = xd.io.open_odim_datatree(radar_h5_file)
-moment = pvol["sweep_0"].ds.wrl.georef.georeference(
+pvol = xr.open_dataset(radar_h5_file, group="sweep_0", engine="odim")
+#pvol = xd.io.open_odim_datatree(radar_h5_file)
+moment = pvol.wrl.georef.georeference(
             crs=wrl.georef.get_default_projection()
         )
 cKDTree_w = cKDTree(np.column_stack((moment.y.data.flatten(), moment.x.data.flatten())))
@@ -53,9 +54,10 @@ for filename in file_list.keys():
     lat,lon = file_list[filename]
     radar_measurements = []
     date = first_date
-
+    
     az_ran=get_nearest_xy_coordinate_in_model(lon,lat)
     while date <= end_date:
+        print(date, flush=True)
         radar_h5_file =Path(radar_filename.format(
                         year=date.year,
                         month=date.month,
@@ -66,8 +68,8 @@ for filename in file_list.keys():
                     ))
         
         if radar_h5_file.is_file():
-            pvol = xd.io.open_odim_datatree(radar_h5_file)
-            moment = pvol["sweep_0"].ds.wrl.georef.georeference(
+            pvol = xr.open_dataset(radar_h5_file, group="sweep_0", engine="odim")
+            moment = pvol.wrl.georef.georeference(
                         crs=wrl.georef.get_default_projection()
                     )
             value = moment['DBZH'][az_ran].data 
@@ -83,7 +85,7 @@ for filename in file_list.keys():
         #exit()
     #tallenna tuo lista filuksi!
     df = pd.DataFrame(radar_measurements, columns=['Date', 'Value'])
-    filename_out = 'advection_corrected_'+ filename
+    filename_out = 'advection_corrected_at_aws/'+ filename
 
     # Write to CSV
     df.to_csv(filename_out, index=False)
