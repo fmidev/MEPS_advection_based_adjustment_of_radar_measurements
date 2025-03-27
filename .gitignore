@@ -1,2 +1,5 @@
 corrected_field/
 advection_corrected_at_aws/
+classifications/
+uncorrected_at_aws/
+corrected_at_aws/
