@@ -30,8 +30,8 @@ ds1 = xr.open_dataset('smartmets/latest_smartmet.grib', engine='cfgrib')
 ds2 = xr.open_dataset('smartmets/second_latest_smartmet.grib', engine='cfgrib')
 ds3 = xr.open_dataset('smartmets/oldest_smartmet.grib', engine='cfgrib')
 
-combined_ds = combine_grib_files(ds2, ds3)
-combined_ds = combine_grib_files(ds1, combined_ds)
-print(combined_ds.step.data)
+combined_ds = combine_grib_files(ds1, ds2)
+#combined_ds = combine_grib_files(ds1, combined_ds)
+#print(combined_ds.step.data)
 # Save the combined dataset if needed
 combined_ds.to_netcdf('smartmets/combined_data.nc')

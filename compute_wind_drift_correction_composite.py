@@ -9,10 +9,15 @@ from scipy.spatial import cKDTree
 from scipy.interpolate import RegularGridInterpolator
 import datetime
 import argparse
+import h5py
+import rioxarray as rxr
+import rasterio as rio
+from pyproj import Transformer
 
-class advection_adjustment():
-    def __init__(self,antenna_lat,antenna_lon,antenna_height):
+class wind_drift_correction():
+    def __init__(self):
         ground_level_dataset = xr.open_dataset("suomi_korkeusalueet_luvuilla.tif", decode_coords="all").isel(band=0).to_dataarray()
+        target_crs = "EPSG:4326" 
         #X,Y = np.meshgrid(,ground_level_dataset.y)
         self.ground_lons = ground_level_dataset.x.values
         self.ground_lats = ground_level_dataset.y.values
@@ -31,15 +36,31 @@ class advection_adjustment():
         self.lats = self.weather['latitude'].values
         self.lons = self.weather['longitude'].values
         self.cKDTree_weather = cKDTree(np.column_stack((self.weather['latitude'].values.flatten(), self.weather['longitude'].values.flatten())))
-        self.antenna_lat = antenna_lat
-        self.antenna_lon = antenna_lon
-        self.antenna_height = antenna_height
+        self.bin_heights = self.get_bin_heights_data("height_composite_finradfast_georeferenced.tif")
+        # Define the source and target CRS
+        source_crs = self.bin_heights.rio.crs  # e.g., "EPSG:32633" (UTM zone 33N)
+         # WGS84 lat/lon
+        self.bin_lons = self.bin_heights.x.values
+        self.bin_lats = self.bin_heights.y.values
+        # Create a transformer
+        
+        self.inverse_transformer = Transformer.from_crs(target_crs,source_crs, always_xy=True)
+        self.bin_heights = self.bin_heights.values[0]
+        self.bin_heights[np.isnan(self.bin_heights)] = 0
     
+    def get_bin_heights_data(self, file_path="height_composite_finradfast_georeferenced.tif"):
+        ds = xr.open_dataset(file_path, decode_coords="all").isel(band=0).to_dataarray()
+        masked = ds.where(ds < 255)
+        transformed = masked * 100 - 100
+        
+        return transformed
+
     def get_nearest_xy_coordinate_in_model(self,x,y):
         dist, idx = self.cKDTree_weather.query((y, x))
         return np.unravel_index(idx, self.shape)
         
     def get_nearest_ground_level(self,x,y):
+
         i = np.argmin(np.abs(self.ground_lons - x))
         j = np.argmin(np.abs(self.ground_lats - y))
         return self.ground_level_dataset[j,i]
@@ -50,14 +71,11 @@ class advection_adjustment():
         return self.height_to_level[smallest_value]-18
     
     def get_radar_bin_height(self, x, y, ground):
-        lat_diff_m = (y-self.antenna_lat)
-        lon_diff_m = (x-self.antenna_lon)*np.cos((np.deg2rad(y+self.antenna_lat)/2))
-        
-        distance_meters = np.sqrt(lat_diff_m**2+lon_diff_m**2)*111412
-        if distance_meters > 250000:
-            return np.nan
-        
-        return 6371000*4.0/3.0*(np.cos(np.deg2rad(0.3))/(np.cos(np.deg2rad(0.3)+distance_meters/(6371000*4.0/3.0)))-1)+ self.antenna_height - ground
+        x_orig, y_orig =  self.inverse_transformer.transform(x,y)
+        bin_h = self.bin_heights
+        lat_idx = np.argmin(np.abs(self.bin_lats - y_orig))
+        lon_idx = np.argmin(np.abs(self.bin_lons - x_orig))
+        return bin_h[lat_idx, lon_idx]
     
     def rise_from_ml_given_time_from_x_0(self,time,x_0):
         # here time and x_0 are with respect to the beginning of melting layer
@@ -98,7 +116,7 @@ class advection_adjustment():
     def compute_next_timestep(self, y, x, z, lvl, u_tuuli, v_tuuli, ml_height,closest_x,closest_y):
         timestep = 100000 # Sekunti
         
-        if u_tuuli > 0 and closest_x < self.shape[1]:
+        if u_tuuli > 0 and ((closest_x+1) < self.lats.shape[1]):
             lat = self.lats[closest_y,closest_x + 1]
             lon = self.lons[closest_y,closest_x + 1]
             lat_diff_m = (y-lat)
@@ -113,7 +131,7 @@ class advection_adjustment():
             dist = np.sqrt(lat_diff_m**2+lon_diff_m**2)*111412
             timestep = min(dist/np.abs(u_tuuli), timestep)
         
-        if v_tuuli > 0 and closest_y < self.shape[0]:
+        if v_tuuli > 0 and ((closest_y + 1)< self.lats.shape[0]):
             lat = self.lats[closest_y + 1,closest_x]
             lon = self.lons[closest_y + 1,closest_x]
             lat_diff_m = (y-lat)
@@ -165,7 +183,6 @@ class advection_adjustment():
         z = 0
         if np.isnan(ground): 
             ground = 0
-
         el_h = self.get_radar_bin_height(lon,lat,ground)
         
         time_correction = current_time.minute*60 + current_time.second
@@ -176,9 +193,12 @@ class advection_adjustment():
         
         first_timestamp = self.weather.time.data
         starting_hour = ((np.datetime64(current_time)-first_timestamp).astype('timedelta64[s]')/3600).astype(int)
-
+        #starting_hour = 0
+        
         while el_h > z:
+            #print(el_h,z)
             step=int(np.floor((t+time_correction)/3600) + starting_hour)
+            #print(step, el_h, z, time_correction, starting_hour)
             # tässä approksimaatio 1 degree lat on 111.412 km
             if np.abs(lat-lat_alku) > 2.5/111.412:
                 if lat > lat_alku:
@@ -208,15 +228,16 @@ class advection_adjustment():
             lat -= v_tuuli*timestep/111412
             z += self.compute_rise(timestep,z,ml_height)
             t -= timestep
-
             el_h = self.get_radar_bin_height(lon,lat, ground)
+        if z != 0:
+            # approximation to correct the last movement
+            to_next_height = max(0,z-el_h)
+            timestep = self.compute_time_for_rise(to_next_height,el_h,ml_height)
             
-        # approximation to correct the last movement
-        to_next_height = max(0,z-el_h)
-        timestep = self.compute_time_for_rise(to_next_height,el_h,ml_height)
-        
-        # Tässä lisätään timestep, jotta saadaan hetki jolloin alin kulma leikkaa.
-        return (lat,lon,el_h,t+timestep)
+            # Tässä lisätään timestep, jotta saadaan hetki jolloin alin kulma leikkaa.
+            return (lat,lon,el_h,t+timestep)
+        else:
+            return (lat,lon,0,0)
     
     # Täällä muuttuu paljon...
     # Oleellisesti ei enää käytetä reference fileä samalla tavalla
@@ -224,92 +245,100 @@ class advection_adjustment():
     # Lat lon muuttujat pitää laittaa oikeisiin paikkoihin.
     # iNTERPOLOIONTI ON ERILAILLA.
     # Funktion itsensä määrittely on erilainen
-    def get_adjusted_mapping(self, starttime_str, reference_filename = "/arch/radar/HDF5/2022/07/07/radar/polar/fiuta/202207070000_radar.polar.fiuta.h5"
+    # "/arch/radar/storage/2025/11/08/fmi/radar/iris/GeoTIFF/202511080015_SUOMI250_FIN.tif"
+    # import rioxarray as rxr
+    # data = rxr.open_rasterio(file_path2)
+    # data.rio.reproject("EPSG:4326")
+    def get_adjusted_mapping(self, starttime_str, reference_filename = "/arch/radar/storage/2025/11/08/fmi/radar/iris/GeoTIFF/202511080015_SUOMI250_FIN.tif"
         ):
-        pvol = xd.io.open_odim_datatree(reference_filename)
+        with rxr.open_rasterio(reference_filename) as ds:
+            #print(ds)            
+            lenlons = len(ds.x)
+            lenlats = len(ds.y)
+            step_eka = 8
+            step_toka = 8
+            #Näissä viimeinen jää pois lasketaan ne erikseen.
 
-        ds1 = pvol["sweep_0"].ds.wrl.georef.georeference(
-            crs=wrl.georef.get_default_projection()
-        )
-        step_azi = 5
-        step_r = 5
-        #Näissä viimeinen jää pois lasketaan ne erikseen.
-        radar_lats = ds1.to_dataarray().y.values[::step_azi,::-step_r]
-        radar_lons = ds1.to_dataarray().x.values[::step_azi,::-step_r]
-        
-        start_time = datetime.datetime.strptime(starttime_str, "%Y%m%d%H%M")
-        end_time = start_time+ datetime.timedelta(hours=3)
-        current_time = start_time
-        while current_time <= end_time:
+            #print(lenlats,lenlons)
+            # Pitää lisätä viimeiset pisteet mukaan!
 
-            print("now computing:",current_time)
-            def process(i,j):
-                lat,lon = radar_lats[i,j],radar_lons[i,j]
-                return self.advection_from_a_grid_cell(lat,lon, current_time)  
 
-            #print((radar_lats))
-            with parallel_backend("loky", inner_max_num_threads=2):
-                data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j,)  for i in range(0,360//step_azi) for j in range(0,500//step_r))
-            
-            time_vol = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
+            # Define the source and target CRS
+            source_crs = ds.rio.crs  # e.g., "EPSG:32633" (UTM zone 33N)
+            target_crs = "EPSG:4326"  # WGS84 lat/lon
 
-            new_lat = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
-            new_lon = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
-            el_h = np.zeros((360//step_azi+1,500//step_r+1))*np.nan
-            
-            for i in range(0,360//step_azi):
-                for j in range(0,500//step_r):
-                    a = i*500//step_r+j
-                    if data[a]:
+            # Create a transformer
+            transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
+            x_vals = ds.x.values
+            y_vals = ds.y.values
+            radar_lats = y_vals[::step_eka]
+            radar_lats = np.append(radar_lats,y_vals[-1])
+            radar_lons = x_vals[::step_toka]
+            radar_lons = np.append(radar_lons,x_vals[-1])
+            start_time = datetime.datetime.strptime(starttime_str, "%Y%m%d%H%M")
+            end_time = start_time+ datetime.timedelta(hours=3)
+            current_time = start_time
+            while current_time <= end_time:
+                print("now computing:",current_time)
+                def process(i,j):
+                    y,x = radar_lats[i],radar_lons[j]
+                    lon, lat = transformer.transform(x, y)
+                    return self.advection_from_a_grid_cell(lat,lon, current_time)  
+
+                with parallel_backend("loky", inner_max_num_threads=2):
+                    data = Parallel(n_jobs=4,verbose=1)(delayed(process)(i,j,)  for j in range(0,lenlons//step_toka+2) for i in range(0,lenlats//step_eka + 2) )
+                
+                time_vol = np.zeros((lenlats//step_eka+2,lenlons//step_toka+2))*np.nan
+                new_lat = np.zeros((lenlats//step_eka+2,lenlons//step_toka+2))*np.nan
+                new_lon = np.zeros((lenlats//step_eka+2,lenlons//step_toka+2))*np.nan
+                el_h = np.zeros((lenlats//step_eka+2,lenlons//step_toka+2))*np.nan
+                
+                for i in range(0,lenlats//step_eka+2):
+                    for j in range(0,lenlons//step_toka+2):
+                        a = j*(lenlats//step_eka+2)+i
+                        
                         if ~np.isnan(data[a][2]):
-                            new_lat[i,-j-1] = data[a][0]
-                            new_lon[i,-j-1] = data[a][1]
-                            el_h[i,-j-1] = data[a][2]
-                            time_vol[i,-j-1] = -data[a][3]/(30*5)
+                            new_lat[i,j] = data[a][0]
+                            new_lon[i,j] = data[a][1]
+                            el_h[i,j] = data[a][2]
+                            time_vol[i,j] = -data[a][3]/(30*5)
 
-            for j in range(0,500//step_r):
-                a = j
-                if data[a]:
-                    if ~np.isnan(data[a][2]):
-                        new_lat[360//step_azi,-j-1] = data[a][0]
-                        new_lon[360//step_azi,-j-1] = data[a][1]
-                        el_h[360//step_azi,-j-1] = data[a][2]
-                        time_vol[360//step_azi,-j-1]= -data[a][3]/(30*5)
-            
-            # täytetään toiselta puolelta ensimmäisellä tutkabinillä yleisesti nolla.
-            for i in range(0,360//step_azi+1):
-                u_i = (i +(180//step_azi)) % (360//step_azi)
-                new_lat[i][0] = data[a][0]
-                new_lon[i][0] = data[a][1]
-                el_h[i][0] = data[a][2]
-                time_vol[i][0] = time_vol[u_i][2]
+                
+                # ongelma on väärän muotoinen palikka
+                
+                y = np.arange(0,lenlats)[::step_eka]
+                y = np.append(y,lenlats-1)
+                x = np.arange(0,lenlons)[::step_toka]
+                x = np.append(x,lenlons-1)
+                xg, yg = np.meshgrid(np.arange(0,lenlons), np.arange(0,lenlats))
+                
+                measured_points = (x,y)
+                points_in_which_to_interpolate = np.array([xg.flatten(),yg.flatten()]).T
+                
+                interp_time = RegularGridInterpolator(measured_points, time_vol.T)     
+                final_time = interp_time(points_in_which_to_interpolate).reshape((lenlats,lenlons)).round()
 
-            x = np.arange(0,361,step_azi)
-            y = np.concatenate([np.array([-step_r]),np.array(np.arange(step_r,500 + step_r,step_r))])
-            xg, yg = np.meshgrid(np.arange(0,360), np.arange(0,500))
-            
-            measured_points = (x,y)
-            points_in_which_to_interpolate = np.array([xg.flatten(),yg.flatten()]).T
-            
-            interp_time = RegularGridInterpolator(measured_points, time_vol)     
-            final_time = interp_time(points_in_which_to_interpolate).reshape((500,360)).T.round()
+                interp_lat = RegularGridInterpolator(measured_points, new_lat.T)     
+                final_lat = interp_lat(points_in_which_to_interpolate).reshape((lenlats,lenlons))
 
-            interp_lat = RegularGridInterpolator(measured_points, new_lat)     
-            final_lat = interp_lat(points_in_which_to_interpolate).reshape((500,360)).T
+                interp_lon = RegularGridInterpolator(measured_points, new_lon.T)     
+                final_lon = interp_lon(points_in_which_to_interpolate).reshape((lenlats,lenlons))
 
-            interp_lon = RegularGridInterpolator(measured_points, new_lon)     
-            final_lon = interp_lon(points_in_which_to_interpolate).reshape((500,360)).T
-
-            interp_el_h = RegularGridInterpolator(measured_points, el_h)     
-            final_el_h = interp_el_h(points_in_which_to_interpolate).reshape((500,360)).T
-
-            cur_str = datetime.datetime.strftime(current_time, "%Y%m%d%H%M")
-            np.save('correction_maps/'+cur_str+'_lon', final_lon)
-            np.save('correction_maps/'+cur_str+'_lat', final_lat)
-            np.save('correction_maps/'+cur_str+'_time', final_time)
-            np.save('correction_maps/'+cur_str+'_el', final_el_h)
-
-            current_time += datetime.timedelta(minutes=5)
+                interp_el_h = RegularGridInterpolator(measured_points, el_h.T)     
+                final_el_h = interp_el_h(points_in_which_to_interpolate).reshape((lenlats,lenlons))
+                cur_str = datetime.datetime.strftime(current_time, "%Y%m%d%H%M")
+                np.savez_compressed('correction_maps_composite/'+cur_str+'_lon', final_lon)
+                np.savez_compressed('correction_maps_composite/'+cur_str+'_lat', final_lat)
+                np.savez_compressed('correction_maps_composite/'+cur_str+'_time', final_time)
+                np.savez_compressed('correction_maps_composite/'+cur_str+'_el', final_el_h)
+                """
+                np.save('correction_maps_composite/'+cur_str+'_lon', new_lon)
+                np.save('correction_maps_composite/'+cur_str+'_lat', new_lat)
+                np.save('correction_maps_composite/'+cur_str+'_time', time_vol)
+                np.save('correction_maps_composite/'+cur_str+'_el', el_h)
+                
+                """
+                current_time += datetime.timedelta(minutes=5)
         
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -320,7 +349,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     starttime = args.starttime
     
-    advec = advection_adjustment(64.7749301232398,26.3188800774515,118)
+    advec = wind_drift_correction()
     # hae kellonaika ja tee edellisen tunnin perusteella tuo homma.
 
     data = advec.get_adjusted_mapping(starttime)
